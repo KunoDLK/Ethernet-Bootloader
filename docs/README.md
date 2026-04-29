@@ -16,4 +16,3 @@ This folder defines the **resident bootloader control protocol** used to discove
 - **Alignment**: packets are byte-packed; do not assume alignment.
 - **Reliability**: UDP messages may be lost/duplicated/reordered; clients must use `transaction_id`.
 - **Versioning**: `proto_version` is carried in every packet and is required for compatibility.
-
