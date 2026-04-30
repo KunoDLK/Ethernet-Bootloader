@@ -122,7 +122,6 @@ All messages should include at least:
 - `mac` (6 bytes)
 - current `ip` / `subnet` / `gateway`
 - firmware versions + capabilities bitfield
- 
 
 ## Security model (private-network + device tree locks)
 
@@ -207,7 +206,7 @@ The node tree must be accessible at any time via the resident server (not only d
   - `fw/resident_version`, `fw/app_version`
   - `boot/proto_version`, `boot/capabilities`
 - **App-specific subtree**:
-  - e.g. `app/*`
+  - e.g. `app/`*
   - provided/registered by the application module through the resident’s app API.
 
 ## Open items / TBD
@@ -216,4 +215,3 @@ The node tree must be accessible at any time via the resident server (not only d
 - Exact on-wire binary message formats (endianness, alignment, max size)
 - LAN8720 RMII clocking (PHY crystal vs MCU-provided REF_CLK) and pin mapping
 - Flash sector map and exact memory layout for resident/app/metadata
-
