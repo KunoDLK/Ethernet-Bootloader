@@ -52,11 +52,11 @@
 /*----- Value in opt.h for MEM_ALIGNMENT: 1 -----*/
 #define MEM_ALIGNMENT 4
 /*----- Value in opt.h for MEMP_NUM_SYS_TIMEOUT: (LWIP_TCP + IP_REASSEMBLY + LWIP_ARP + (2*LWIP_DHCP) + LWIP_AUTOIP + LWIP_IGMP + LWIP_DNS + (PPP_SUPPORT*6*MEMP_NUM_PPP_PCB) + (LWIP_IPV6 ? (1 + LWIP_IPV6_REASS + LWIP_IPV6_MLD) : 0)) -*/
-#define MEMP_NUM_SYS_TIMEOUT 5
+#define MEMP_NUM_SYS_TIMEOUT 2
 /*----- Value in opt.h for LWIP_ETHERNET: LWIP_ARP || PPPOE_SUPPORT -*/
 #define LWIP_ETHERNET 1
 /*----- Value in opt.h for LWIP_DNS_SECURE: (LWIP_DNS_SECURE_RAND_XID | LWIP_DNS_SECURE_NO_MULTIPLE_OUTSTANDING | LWIP_DNS_SECURE_RAND_SRC_PORT) -*/
-#define LWIP_DNS_SECURE 7
+#define LWIP_DNS_SECURE 0
 /*----- Value in opt.h for TCP_SND_QUEUELEN: (4*TCP_SND_BUF + (TCP_MSS - 1))/TCP_MSS -----*/
 #define TCP_SND_QUEUELEN 9
 /*----- Value in opt.h for TCP_SNDLOWAT: LWIP_MIN(LWIP_MAX(((TCP_SND_BUF)/2), (2 * TCP_MSS) + 1), (TCP_SND_BUF) - 1) -*/
@@ -113,11 +113,41 @@
 #define CHECKSUM_CHECK_ICMP6 0
 /*-----------------------------------------------------------------------------*/
 /* USER CODE BEGIN 1 */
+/* Static IPv4 Ethernet only. Keep ARP, IPv4, TCP and UDP; disable optional services. */
+#define LWIP_IPV4 1
+#define LWIP_ARP 1
+#define LWIP_TCP 1
+#define LWIP_UDP 1
+#define LWIP_DNS 0
+#define LWIP_AUTOIP 0
+#define LWIP_IGMP 0
+#define LWIP_IPV6 0
+#define LWIP_IPV6_REASS 0
+#define LWIP_IPV6_FRAG 0
+#define LWIP_IPV6_MLD 0
+#define LWIP_IPV6_DHCP6 0
+#define LWIP_RAW 0
+#define LWIP_ICMP 0
+#define LWIP_NETCONN 0
+#define LWIP_SOCKET 0
+#define LWIP_SOCKET_SELECT 0
+#define LWIP_SOCKET_POLL 0
+#define LWIP_TCP_KEEPALIVE 0
+#define LWIP_TCP_TIMESTAMPS 0
+#define LWIP_UDPLITE 0
+#define IP_REASSEMBLY 0
+#define IP_FRAG 0
+#define LWIP_SUPPORT_CUSTOM_PBUF 1
+#define PPP_SUPPORT 0
+#define LWIP_MDNS_RESPONDER 0
+#define LWIP_NETBIOS_RESPOND_NAME_QUERY 0
+#define LWIP_SNMP 0
+
 /* Keep lwIP memory deterministic: use lwIP's internal static heap/pools, not libc malloc. */
 #define MEM_LIBC_MALLOC 0
 #define MEMP_MEM_MALLOC 0
-#define MEM_SIZE (16 * 1024)
-#define PBUF_POOL_SIZE 16
+#define MEM_SIZE (8 * 1024)
+#define PBUF_POOL_SIZE 6
 #define PBUF_POOL_BUFSIZE 1536
 /* USER CODE END 1 */
 

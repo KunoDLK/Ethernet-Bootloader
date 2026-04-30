@@ -482,13 +482,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, User_LED_Red_Pin|Output_Rail_1_Tristate_Mode_Pin|Output_Rail_2_Tristate_Mode_Pin|USART8_RS485_Mode_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, Output_Rail_1_Tristate_Mode_Pin|Output_Rail_2_Tristate_Mode_Pin|USART8_RS485_Mode_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, User_Led_Gre_Pin|Expansion_GPIO_1_Pin|Expansion_GPIO_2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, Expansion_GPIO_1_Pin|Expansion_GPIO_2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, UART5_TTL_TX_Enable_Pin|UART5_TTL_RX_Disable_Pin|Engineer_LED_Red_Pin|Engineer_LED_Green_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, UART5_TTL_TX_Enable_Pin|UART5_TTL_RX_Disable_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, Enable_5V_Rail_Pin|Expansion_GPIO_3_Pin, GPIO_PIN_RESET);
@@ -499,15 +499,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(nESTOP_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : User_LED_Red_Pin Output_Rail_1_Tristate_Mode_Pin Output_Rail_2_Tristate_Mode_Pin USART8_RS485_Mode_Pin */
-  GPIO_InitStruct.Pin = User_LED_Red_Pin|Output_Rail_1_Tristate_Mode_Pin|Output_Rail_2_Tristate_Mode_Pin|USART8_RS485_Mode_Pin;
+  /*Configure GPIO pins : Output_Rail_1_Tristate_Mode_Pin Output_Rail_2_Tristate_Mode_Pin USART8_RS485_Mode_Pin */
+  GPIO_InitStruct.Pin = Output_Rail_1_Tristate_Mode_Pin|Output_Rail_2_Tristate_Mode_Pin|USART8_RS485_Mode_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : User_Led_Gre_Pin Expansion_GPIO_1_Pin Expansion_GPIO_2_Pin */
-  GPIO_InitStruct.Pin = User_Led_Gre_Pin|Expansion_GPIO_1_Pin|Expansion_GPIO_2_Pin;
+  /*Configure GPIO pins : Expansion_GPIO_1_Pin Expansion_GPIO_2_Pin */
+  GPIO_InitStruct.Pin = Expansion_GPIO_1_Pin|Expansion_GPIO_2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -519,8 +519,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(Button_Input_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : UART5_TTL_TX_Enable_Pin UART5_TTL_RX_Disable_Pin Engineer_LED_Red_Pin Engineer_LED_Green_Pin */
-  GPIO_InitStruct.Pin = UART5_TTL_TX_Enable_Pin|UART5_TTL_RX_Disable_Pin|Engineer_LED_Red_Pin|Engineer_LED_Green_Pin;
+  /*Configure GPIO pins : UART5_TTL_TX_Enable_Pin UART5_TTL_RX_Disable_Pin */
+  GPIO_InitStruct.Pin = UART5_TTL_TX_Enable_Pin|UART5_TTL_RX_Disable_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
