@@ -77,8 +77,14 @@ static void discovery_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
   struct pbuf *response = pbuf_alloc(PBUF_TRANSPORT, sizeof(reply), PBUF_RAM);
   if (response != 0)
   {
+    const ip_addr_t *reply_addr = addr;
+    if (!ip4_addr_netcmp(ip_2_ip4(addr), netif_ip4_addr(&gnetif), netif_ip4_netmask(&gnetif)))
+    {
+      reply_addr = IP_ADDR_BROADCAST;
+    }
+
     memcpy(response->payload, &reply, sizeof(reply));
-    (void)udp_sendto(pcb, response, addr, port);
+    (void)udp_sendto(pcb, response, reply_addr, port);
     pbuf_free(response);
   }
 
