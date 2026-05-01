@@ -20,6 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "lwip.h"
+#include "boot_metadata.h"
 #include "lwip/init.h"
 #include "lwip/netif.h"
 #if defined ( __CC_ARM )  /* MDK ARM Compiler */
@@ -68,13 +69,17 @@ void MX_LWIP_Init(void)
   tcpip_init( NULL, NULL );
 
   /* Static IPv4 configuration */
-  IP4_ADDR(&ipaddr, RESIDENT_IPV4_ADDR0, RESIDENT_IPV4_ADDR1, RESIDENT_IPV4_ADDR2, RESIDENT_IPV4_ADDR3);
-  IP4_ADDR(&netmask, RESIDENT_IPV4_MASK0, RESIDENT_IPV4_MASK1, RESIDENT_IPV4_MASK2, RESIDENT_IPV4_MASK3);
-  IP4_ADDR(&gw, RESIDENT_IPV4_GW0, RESIDENT_IPV4_GW1, RESIDENT_IPV4_GW2, RESIDENT_IPV4_GW3);
+  uint8_t stored_ip[4];
+  uint8_t stored_netmask[4];
+  uint8_t stored_gw[4];
+  boot_metadata_get_ipv4(stored_ip, stored_netmask, stored_gw);
+  IP4_ADDR(&ipaddr, stored_ip[0], stored_ip[1], stored_ip[2], stored_ip[3]);
+  IP4_ADDR(&netmask, stored_netmask[0], stored_netmask[1], stored_netmask[2], stored_netmask[3]);
+  IP4_ADDR(&gw, stored_gw[0], stored_gw[1], stored_gw[2], stored_gw[3]);
   printf("lwIP static IPv4: %u.%u.%u.%u mask %u.%u.%u.%u gw %u.%u.%u.%u\r\n",
-         RESIDENT_IPV4_ADDR0, RESIDENT_IPV4_ADDR1, RESIDENT_IPV4_ADDR2, RESIDENT_IPV4_ADDR3,
-         RESIDENT_IPV4_MASK0, RESIDENT_IPV4_MASK1, RESIDENT_IPV4_MASK2, RESIDENT_IPV4_MASK3,
-         RESIDENT_IPV4_GW0, RESIDENT_IPV4_GW1, RESIDENT_IPV4_GW2, RESIDENT_IPV4_GW3);
+         stored_ip[0], stored_ip[1], stored_ip[2], stored_ip[3],
+         stored_netmask[0], stored_netmask[1], stored_netmask[2], stored_netmask[3],
+         stored_gw[0], stored_gw[1], stored_gw[2], stored_gw[3]);
 
   /* add the network interface (IPv4/IPv6) with RTOS */
   netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL, &ethernetif_init, &tcpip_input);

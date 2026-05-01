@@ -36,6 +36,7 @@
 
 /* Within 'USER CODE' section, code will be kept by default at each generation */
 /* USER CODE BEGIN 0 */
+#include "boot_metadata.h"
 
 /* USER CODE END 0 */
 
@@ -222,6 +223,7 @@ static void low_level_init(struct netif *netif)
   heth.Init.RxBuffLen = 1536;
 
   /* USER CODE BEGIN MACADDRESS */
+  boot_metadata_get_mac(MACAddr);
 
   /* USER CODE END MACADDRESS */
 
