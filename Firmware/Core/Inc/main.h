@@ -59,10 +59,14 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define nESTOP_Pin GPIO_PIN_15
 #define nESTOP_GPIO_Port GPIOC
+#define User_LED_Red_Pin GPIO_PIN_0
+#define User_LED_Red_GPIO_Port GPIOC
 #define Output_Rail_1_Tristate_Mode_Pin GPIO_PIN_2
 #define Output_Rail_1_Tristate_Mode_GPIO_Port GPIOC
 #define Output_Rail_2_Tristate_Mode_Pin GPIO_PIN_3
 #define Output_Rail_2_Tristate_Mode_GPIO_Port GPIOC
+#define User_Led_Gre_Pin GPIO_PIN_0
+#define User_Led_Gre_GPIO_Port GPIOA
 #define Button_Input_Pin GPIO_PIN_4
 #define Button_Input_GPIO_Port GPIOA
 #define Output_Rail_1_Current_Sense_Pin GPIO_PIN_0
@@ -91,6 +95,10 @@ void Error_Handler(void);
 #define UART5_TTL_RX_Disable_GPIO_Port GPIOD
 #define TTL_RX_Pin GPIO_PIN_2
 #define TTL_RX_GPIO_Port GPIOD
+#define Engineer_LED_Red_Pin GPIO_PIN_5
+#define Engineer_LED_Red_GPIO_Port GPIOD
+#define Engineer_LED_Green_Pin GPIO_PIN_6
+#define Engineer_LED_Green_GPIO_Port GPIOD
 #define Enable_5V_Rail_Pin GPIO_PIN_8
 #define Enable_5V_Rail_GPIO_Port GPIOB
 #define Expansion_GPIO_3_Pin GPIO_PIN_9

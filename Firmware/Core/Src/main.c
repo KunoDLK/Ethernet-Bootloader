@@ -24,7 +24,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "FreeRTOS.h"
+#include "resident_main.h"
 #include "task.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,7 +62,7 @@ osThreadId_t defaultTaskHandle;
 StaticTask_t defaultTaskControlBlock;
 StackType_t defaultTaskStack[1024];
 const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
+  .name = "Resident",
   .cb_mem = &defaultTaskControlBlock,
   .cb_size = sizeof(defaultTaskControlBlock),
   .stack_mem = defaultTaskStack,
@@ -109,7 +111,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  setvbuf(stdout, NULL, _IONBF, 0);
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -121,6 +123,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  HAL_GPIO_WritePin(Engineer_LED_Green_GPIO_Port, Engineer_LED_Green_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(Engineer_LED_Red_GPIO_Port, Engineer_LED_Red_Pin, GPIO_PIN_SET);
   MX_ADC1_Init();
   MX_CRC_Init();
   MX_HASH_Init();
@@ -160,7 +164,6 @@ int main(void)
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
   /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
@@ -482,13 +485,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, Output_Rail_1_Tristate_Mode_Pin|Output_Rail_2_Tristate_Mode_Pin|USART8_RS485_Mode_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, User_LED_Red_Pin|Output_Rail_1_Tristate_Mode_Pin|Output_Rail_2_Tristate_Mode_Pin|USART8_RS485_Mode_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, Expansion_GPIO_1_Pin|Expansion_GPIO_2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, User_Led_Gre_Pin|Expansion_GPIO_1_Pin|Expansion_GPIO_2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, UART5_TTL_TX_Enable_Pin|UART5_TTL_RX_Disable_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, UART5_TTL_TX_Enable_Pin|UART5_TTL_RX_Disable_Pin|Engineer_LED_Red_Pin|Engineer_LED_Green_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, Enable_5V_Rail_Pin|Expansion_GPIO_3_Pin, GPIO_PIN_RESET);
@@ -499,15 +502,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(nESTOP_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : Output_Rail_1_Tristate_Mode_Pin Output_Rail_2_Tristate_Mode_Pin USART8_RS485_Mode_Pin */
-  GPIO_InitStruct.Pin = Output_Rail_1_Tristate_Mode_Pin|Output_Rail_2_Tristate_Mode_Pin|USART8_RS485_Mode_Pin;
+  /*Configure GPIO pins : User_LED_Red_Pin Output_Rail_1_Tristate_Mode_Pin Output_Rail_2_Tristate_Mode_Pin USART8_RS485_Mode_Pin */
+  GPIO_InitStruct.Pin = User_LED_Red_Pin|Output_Rail_1_Tristate_Mode_Pin|Output_Rail_2_Tristate_Mode_Pin|USART8_RS485_Mode_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : Expansion_GPIO_1_Pin Expansion_GPIO_2_Pin */
-  GPIO_InitStruct.Pin = Expansion_GPIO_1_Pin|Expansion_GPIO_2_Pin;
+  /*Configure GPIO pins : User_Led_Gre_Pin Expansion_GPIO_1_Pin Expansion_GPIO_2_Pin */
+  GPIO_InitStruct.Pin = User_Led_Gre_Pin|Expansion_GPIO_1_Pin|Expansion_GPIO_2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -519,8 +522,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(Button_Input_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : UART5_TTL_TX_Enable_Pin UART5_TTL_RX_Disable_Pin */
-  GPIO_InitStruct.Pin = UART5_TTL_TX_Enable_Pin|UART5_TTL_RX_Disable_Pin;
+  /*Configure GPIO pins : UART5_TTL_TX_Enable_Pin UART5_TTL_RX_Disable_Pin Engineer_LED_Red_Pin Engineer_LED_Green_Pin */
+  GPIO_InitStruct.Pin = UART5_TTL_TX_Enable_Pin|UART5_TTL_RX_Disable_Pin|Engineer_LED_Red_Pin|Engineer_LED_Green_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -550,14 +553,8 @@ static void MX_GPIO_Init(void)
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-  /* init code for LWIP */
-  MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+  resident_main_task(argument);
   /* USER CODE END 5 */
 }
 

@@ -22,6 +22,7 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "boot_fault.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -86,7 +87,8 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  register uint32_t exc_return __asm("lr");
+  boot_fault_handle(BOOT_APP_FAULT_HARD, exc_return);
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -101,7 +103,8 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+  register uint32_t exc_return __asm("lr");
+  boot_fault_handle(BOOT_APP_FAULT_MEMMANAGE, exc_return);
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -116,7 +119,8 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  register uint32_t exc_return __asm("lr");
+  boot_fault_handle(BOOT_APP_FAULT_BUS, exc_return);
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -131,7 +135,8 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  register uint32_t exc_return __asm("lr");
+  boot_fault_handle(BOOT_APP_FAULT_USAGE, exc_return);
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {

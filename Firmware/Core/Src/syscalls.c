@@ -21,6 +21,8 @@
  */
 
 /* Includes */
+#include "stm32f4xx.h"
+
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -43,6 +45,35 @@ char **environ = __env;
 /* Functions */
 void initialise_monitor_handles()
 {
+}
+
+static int swo_putchar(int ch)
+{
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+
+  if (((ITM->TCR & ITM_TCR_ITMENA_Msk) != 0UL) &&
+      ((ITM->TER & 1UL) != 0UL))
+  {
+    ITM_SendChar((uint32_t)ch);
+  }
+
+  return ch;
+}
+
+void printChar(char ch)
+{
+  (void)swo_putchar((int)ch);
+}
+
+int __io_putchar(int ch)
+{
+  return swo_putchar(ch);
+}
+
+int fputc(int ch, FILE *stream)
+{
+  (void)stream;
+  return swo_putchar(ch);
 }
 
 int _getpid(void)

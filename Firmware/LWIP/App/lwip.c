@@ -28,6 +28,7 @@
 #include "ethernetif.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include <stdio.h>
 #include <string.h>
 
 /* USER CODE BEGIN 0 */
@@ -67,9 +68,13 @@ void MX_LWIP_Init(void)
   tcpip_init( NULL, NULL );
 
   /* Static IPv4 configuration */
-  IP4_ADDR(&ipaddr, 10, 0, 0, 2);
-  IP4_ADDR(&netmask, 255, 255, 255, 0);
-  IP4_ADDR(&gw, 10, 0, 0, 1);
+  IP4_ADDR(&ipaddr, RESIDENT_IPV4_ADDR0, RESIDENT_IPV4_ADDR1, RESIDENT_IPV4_ADDR2, RESIDENT_IPV4_ADDR3);
+  IP4_ADDR(&netmask, RESIDENT_IPV4_MASK0, RESIDENT_IPV4_MASK1, RESIDENT_IPV4_MASK2, RESIDENT_IPV4_MASK3);
+  IP4_ADDR(&gw, RESIDENT_IPV4_GW0, RESIDENT_IPV4_GW1, RESIDENT_IPV4_GW2, RESIDENT_IPV4_GW3);
+  printf("lwIP static IPv4: %u.%u.%u.%u mask %u.%u.%u.%u gw %u.%u.%u.%u\r\n",
+         RESIDENT_IPV4_ADDR0, RESIDENT_IPV4_ADDR1, RESIDENT_IPV4_ADDR2, RESIDENT_IPV4_ADDR3,
+         RESIDENT_IPV4_MASK0, RESIDENT_IPV4_MASK1, RESIDENT_IPV4_MASK2, RESIDENT_IPV4_MASK3,
+         RESIDENT_IPV4_GW0, RESIDENT_IPV4_GW1, RESIDENT_IPV4_GW2, RESIDENT_IPV4_GW3);
 
   /* add the network interface (IPv4/IPv6) with RTOS */
   netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL, &ethernetif_init, &tcpip_input);
