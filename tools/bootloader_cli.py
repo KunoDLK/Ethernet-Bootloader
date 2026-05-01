@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """Full-screen CLI for the resident Ethernet bootloader."""
 
@@ -53,9 +54,9 @@ DEVICE_TREE_OP_SET = 0x03
 DEVICE_TREE_OP_EXECUTE = 0x04
 STANDARD_REBOOT_PATH = [2]
 # Device tree locations (see Firmware/Resident/Src/resident_device_tree.c TREE_ID_*).
-IPV4_ADDRESS_PATH = [1, 2, 1]
-IPV4_SUBNET_PATH = [1, 2, 2]
-IPV4_GATEWAY_PATH = [1, 2, 3]
+IPV4_ADDRESS_PATH = [1, 2]
+IPV4_SUBNET_PATH = [1, 3]
+IPV4_GATEWAY_PATH = [1, 4]
 DEVICE_MENU_ITEMS = [
     "Device Tree",
     "Write Program",
@@ -398,9 +399,9 @@ def ipv4_prefix_for_interface(interface: NetworkInterface | None) -> str:
 
 
 def edit_default_value(path_names: list[str], selected_interface: NetworkInterface | None) -> str:
-    if path_names[-3:] == ["Network", "IPv4", "Subnet"] and selected_interface is not None:
+    if path_names[-2:] == ["Network", "Subnet"] and selected_interface is not None:
         return selected_interface.subnet
-    if path_names[-3:] in (["Network", "IPv4", "Address"], ["Network", "IPv4", "Gateway"]):
+    if path_names[-2:] in (["Network", "Address"], ["Network", "Gateway"]):
         return ipv4_prefix_for_interface(selected_interface)
     return ""
 

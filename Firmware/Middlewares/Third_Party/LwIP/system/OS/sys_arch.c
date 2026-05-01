@@ -55,7 +55,7 @@ int errno;
 #define LWIP_SYS_SEM_POOL_SIZE         8U
 #define LWIP_SYS_MUTEX_POOL_SIZE       8U
 #define LWIP_SYS_THREAD_POOL_SIZE      4U
-#define LWIP_SYS_THREAD_STACK_BYTES    2048U
+#define LWIP_SYS_THREAD_STACK_BYTES    4096U
 
 typedef struct
 {

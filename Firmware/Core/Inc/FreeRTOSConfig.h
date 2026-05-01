@@ -72,6 +72,8 @@
 #define configTOTAL_HEAP_SIZE                    ((size_t)15360)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configUSE_TRACE_FACILITY                 1
+/* Lets kernel-aware debuggers (e.g. STM32CubeIDE FreeRTOS view) resolve total stack size for usage %. */
+#define configRECORD_STACK_HIGH_ADDRESS          1
 #define configGENERATE_RUN_TIME_STATS            1
 #define configUSE_STATS_FORMATTING_FUNCTIONS     1
 #define configCHECK_FOR_STACK_OVERFLOW           2
@@ -169,6 +171,7 @@ standard names. */
 
 /* USER CODE BEGIN Defines */
 /* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
+
 static inline void vConfigureTimerForRunTimeStats(void)
 {
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;

@@ -18,10 +18,9 @@ extern struct netif gnetif;
 #define TREE_ID_HARDWARE                (4U)
 #define TREE_ID_DEBUG                   (5U)
 #define TREE_ID_NETWORK_MAC             (1U)
-#define TREE_ID_NETWORK_IPV4            (2U)
-#define TREE_ID_IPV4_ADDRESS            (1U)
-#define TREE_ID_IPV4_SUBNET             (2U)
-#define TREE_ID_IPV4_GATEWAY            (3U)
+#define TREE_ID_IPV4_ADDRESS            (2U)
+#define TREE_ID_IPV4_SUBNET             (3U)
+#define TREE_ID_IPV4_GATEWAY            (4U)
 #define TREE_ID_HARDWARE_CPU_TEMP       (1U)
 #define TREE_ID_HARDWARE_CONFIG         (2U)
 #define TREE_ID_HARDWARE_ESTOP          (3U)
@@ -484,18 +483,11 @@ static ResidentHardwareRailId rail_id_for_location(const uint8_t *location)
   return (location[1] == TREE_ID_HARDWARE_RAIL_B) ? RESIDENT_HARDWARE_RAIL_B : RESIDENT_HARDWARE_RAIL_A;
 }
 
-static bool location_is_ipv4(const uint8_t *location, uint8_t depth)
-{
-  return (depth == 2U) && (location[0] == TREE_ID_NETWORK) && (location[1] == TREE_ID_NETWORK_IPV4);
-}
-
 static bool location_is_ipv4_leaf(const uint8_t *location, uint8_t depth)
 {
-  return (depth == 3U) && (location[0] == TREE_ID_NETWORK) &&
-         (location[1] == TREE_ID_NETWORK_IPV4) &&
-         ((location[2] == TREE_ID_IPV4_ADDRESS) ||
-          (location[2] == TREE_ID_IPV4_SUBNET) ||
-          (location[2] == TREE_ID_IPV4_GATEWAY));
+  return (depth == 2U) && (location[0] == TREE_ID_NETWORK) &&
+         ((location[1] == TREE_ID_IPV4_ADDRESS) || (location[1] == TREE_ID_IPV4_SUBNET) ||
+          (location[1] == TREE_ID_IPV4_GATEWAY));
 }
 
 static bool location_is_mac(const uint8_t *location, uint8_t depth)
@@ -717,10 +709,6 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
   {
     items[count++] = (ResidentTreeListItem){TREE_ID_NETWORK_MAC, 0U, TREE_ACCESS_READ_WRITE,
                                             "MAC", mac_text, TREE_WRITE_EFFECT_REBOOT};
-    items[count++] = (ResidentTreeListItem){TREE_ID_NETWORK_IPV4, 1U, TREE_ACCESS_READ, "IPv4", ""};
-  }
-  else if (location_is_ipv4(location, depth))
-  {
     items[count++] = (ResidentTreeListItem){TREE_ID_IPV4_ADDRESS, 0U, TREE_ACCESS_READ_WRITE,
                                             "Address", ip_text, TREE_WRITE_EFFECT_REBOOT};
     items[count++] = (ResidentTreeListItem){TREE_ID_IPV4_SUBNET, 0U, TREE_ACCESS_READ_WRITE,
@@ -865,11 +853,11 @@ int resident_device_tree_get(const uint8_t *location, uint8_t depth,
   else if (location_is_ipv4_leaf(location, depth))
   {
     const uint8_t *selected = ip;
-    if (location[2] == TREE_ID_IPV4_SUBNET)
+    if (location[1] == TREE_ID_IPV4_SUBNET)
     {
       selected = subnet;
     }
-    else if (location[2] == TREE_ID_IPV4_GATEWAY)
+    else if (location[1] == TREE_ID_IPV4_GATEWAY)
     {
       selected = gateway;
     }
@@ -1009,11 +997,11 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
   }
 
   boot_metadata_get_ipv4(ip, subnet, gateway);
-  if (location[2] == TREE_ID_IPV4_ADDRESS)
+  if (location[1] == TREE_ID_IPV4_ADDRESS)
   {
     memcpy(ip, parsed_ip, sizeof(ip));
   }
-  else if (location[2] == TREE_ID_IPV4_SUBNET)
+  else if (location[1] == TREE_ID_IPV4_SUBNET)
   {
     memcpy(subnet, parsed_ip, sizeof(subnet));
   }

@@ -21,6 +21,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
+#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -54,6 +55,22 @@
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+
+/* Call from GDB when halted: call debug_freertos_print_stack_watermarks()
+ * (ITM/SWO or semihosting printf must work for output.) */
+void debug_freertos_print_stack_watermarks(void)
+{
+  static TaskStatus_t rows[24];
+  const UBaseType_t cap = (UBaseType_t)(sizeof(rows) / sizeof(rows[0]));
+  const UBaseType_t n = uxTaskGetSystemState(rows, cap, NULL);
+
+  (void)printf("Task stack high water (FreeRTOS \"words\", typically 4 bytes each)\r\n");
+  for (UBaseType_t i = 0U; i < n; i++)
+  {
+    (void)printf("  %-16s  min_free_words=%u\r\n", rows[i].pcTaskName,
+                   (unsigned int)rows[i].usStackHighWaterMark);
+  }
+}
 
 /* USER CODE END Application */
 
