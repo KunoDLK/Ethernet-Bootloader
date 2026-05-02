@@ -32,8 +32,11 @@ extern struct netif gnetif;
 #define TREE_ID_HARDWARE_RAIL_OUTPUT    (2U)
 
 #define TREE_ID_DEBUG_FLASH                      (1U)
-#define TREE_ID_FLASH_CURRENT_SETTINGS_SLOT      (1U)
-#define TREE_ID_FLASH_TOTAL_SETTINGS_SLOTS       (2U)
+#define TREE_ID_FLASH_CURRENT_SETTINGS_SLOT          (1U)
+#define TREE_ID_FLASH_BYTES_USED                     (2U)
+#define TREE_ID_FLASH_BYTES_REMAINING                (3U)
+#define TREE_ID_FLASH_CURRENT_SETTINGS_PHYS_ADDR    (4U)
+#define TREE_ID_FLASH_CURRENT_SETTINGS_OBJECT_SIZE  (5U)
 
 #define TREE_ACCESS_READ                (0x88U)
 #define TREE_ACCESS_READ_WRITE          (0xCCU)
@@ -513,11 +516,30 @@ static bool location_is_flash_current_settings_slot(const uint8_t *location, uin
          (location[2] == TREE_ID_FLASH_CURRENT_SETTINGS_SLOT);
 }
 
-static bool location_is_flash_total_settings_slots(const uint8_t *location, uint8_t depth)
+static bool location_is_flash_bytes_used(const uint8_t *location, uint8_t depth)
+{
+  return (depth == 3U) && (location[0] == TREE_ID_DEBUG) &&
+         (location[1] == TREE_ID_DEBUG_FLASH) && (location[2] == TREE_ID_FLASH_BYTES_USED);
+}
+
+static bool location_is_flash_bytes_remaining(const uint8_t *location, uint8_t depth)
+{
+  return (depth == 3U) && (location[0] == TREE_ID_DEBUG) &&
+         (location[1] == TREE_ID_DEBUG_FLASH) && (location[2] == TREE_ID_FLASH_BYTES_REMAINING);
+}
+
+static bool location_is_flash_current_settings_phys_addr(const uint8_t *location, uint8_t depth)
 {
   return (depth == 3U) && (location[0] == TREE_ID_DEBUG) &&
          (location[1] == TREE_ID_DEBUG_FLASH) &&
-         (location[2] == TREE_ID_FLASH_TOTAL_SETTINGS_SLOTS);
+         (location[2] == TREE_ID_FLASH_CURRENT_SETTINGS_PHYS_ADDR);
+}
+
+static bool location_is_flash_current_settings_object_size(const uint8_t *location, uint8_t depth)
+{
+  return (depth == 3U) && (location[0] == TREE_ID_DEBUG) &&
+         (location[1] == TREE_ID_DEBUG_FLASH) &&
+         (location[2] == TREE_ID_FLASH_CURRENT_SETTINGS_OBJECT_SIZE);
 }
 
 static bool app_action_name_is_valid(const char *path)
@@ -675,7 +697,10 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
   char rail_a_output_text[16];
   char rail_b_output_text[16];
   char flash_current_slot_text[12];
-  char flash_total_slots_text[12];
+  char flash_bytes_used_text[24];
+  char flash_bytes_remaining_text[24];
+  char flash_settings_phys_addr_text[20];
+  char flash_settings_obj_size_text[16];
 
   if ((response == 0) || (response_len == 0) || ((depth != 0U) && (location == 0)))
   {
@@ -690,8 +715,14 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
 
   (void)snprintf(flash_current_slot_text, sizeof(flash_current_slot_text), "%lu",
                  (unsigned long)boot_metadata_get_current_settings_slot());
-  (void)snprintf(flash_total_slots_text, sizeof(flash_total_slots_text), "%lu",
-                 (unsigned long)boot_metadata_get_total_settings_slots());
+  (void)snprintf(flash_bytes_used_text, sizeof(flash_bytes_used_text), "%lu",
+                 (unsigned long)boot_metadata_get_flash_bytes_used());
+  (void)snprintf(flash_bytes_remaining_text, sizeof(flash_bytes_remaining_text), "%lu",
+                 (unsigned long)boot_metadata_get_flash_bytes_remaining());
+  (void)snprintf(flash_settings_phys_addr_text, sizeof(flash_settings_phys_addr_text), "0x%08lX",
+                 (unsigned long)boot_metadata_get_current_settings_object_phys_addr());
+  (void)snprintf(flash_settings_obj_size_text, sizeof(flash_settings_obj_size_text), "%lu",
+                 (unsigned long)boot_metadata_get_current_settings_object_size_bytes());
 
   if (location_is_root(location, depth))
   {
@@ -769,9 +800,22 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
     items[count++] = (ResidentTreeListItem){TREE_ID_FLASH_CURRENT_SETTINGS_SLOT, 0U, TREE_ACCESS_READ,
                                             "Current Settings Slot", flash_current_slot_text,
                                             0, "Index of the active metadata copy in flash (0-based)"};
-    items[count++] = (ResidentTreeListItem){TREE_ID_FLASH_TOTAL_SETTINGS_SLOTS, 0U, TREE_ACCESS_READ,
-                                            "Total Settings Slot", flash_total_slots_text,
-                                            0, "Total metadata slots available in the flash sector"};
+    items[count++] = (ResidentTreeListItem){TREE_ID_FLASH_BYTES_USED, 0U, TREE_ACCESS_READ,
+                                            "Bytes Used (metadata sector)", flash_bytes_used_text,
+                                            0,
+                                            "Bytes consumed from the metadata sector heap (bitmap + blobs)"};
+    items[count++] = (ResidentTreeListItem){TREE_ID_FLASH_BYTES_REMAINING, 0U, TREE_ACCESS_READ,
+                                            "Bytes Remaining (sector)", flash_bytes_remaining_text,
+                                            0,
+                                            "Bytes remaining in the metadata flash sector"};
+    items[count++] = (ResidentTreeListItem){TREE_ID_FLASH_CURRENT_SETTINGS_PHYS_ADDR, 0U, TREE_ACCESS_READ,
+                                            "Current Settings Object Address", flash_settings_phys_addr_text,
+                                            0,
+                                            "Absolute flash base address of the active KV/settings record"};
+    items[count++] = (ResidentTreeListItem){TREE_ID_FLASH_CURRENT_SETTINGS_OBJECT_SIZE, 0U, TREE_ACCESS_READ,
+                                            "Current Settings Object Size", flash_settings_obj_size_text,
+                                            0,
+                                            "KV blob record_total: logical byte length including trailing CRC"};
   }
   else if (location_is_app(location, depth) && g_app_mount.mounted)
   {
@@ -868,10 +912,25 @@ int resident_device_tree_get(const uint8_t *location, uint8_t depth,
     (void)snprintf(value, sizeof(value), "%lu",
                    (unsigned long)boot_metadata_get_current_settings_slot());
   }
-  else if (location_is_flash_total_settings_slots(location, depth))
+  else if (location_is_flash_bytes_used(location, depth))
   {
     (void)snprintf(value, sizeof(value), "%lu",
-                   (unsigned long)boot_metadata_get_total_settings_slots());
+                   (unsigned long)boot_metadata_get_flash_bytes_used());
+  }
+  else if (location_is_flash_bytes_remaining(location, depth))
+  {
+    (void)snprintf(value, sizeof(value), "%lu",
+                   (unsigned long)boot_metadata_get_flash_bytes_remaining());
+  }
+  else if (location_is_flash_current_settings_phys_addr(location, depth))
+  {
+    (void)snprintf(value, sizeof(value), "0x%08lX",
+                   (unsigned long)boot_metadata_get_current_settings_object_phys_addr());
+  }
+  else if (location_is_flash_current_settings_object_size(location, depth))
+  {
+    (void)snprintf(value, sizeof(value), "%lu",
+                   (unsigned long)boot_metadata_get_current_settings_object_size_bytes());
   }
   else if (location_is_reboot(location, depth) || location_is_app_action(location, depth))
   {
@@ -984,7 +1043,10 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
         location_is_cpu_temp(location, depth) || location_is_estop(location, depth) ||
         location_is_button(location, depth) || location_is_rail_output(location, depth) ||
         location_is_flash_current_settings_slot(location, depth) ||
-        location_is_flash_total_settings_slots(location, depth))
+        location_is_flash_bytes_used(location, depth) ||
+        location_is_flash_bytes_remaining(location, depth) ||
+        location_is_flash_current_settings_phys_addr(location, depth) ||
+        location_is_flash_current_settings_object_size(location, depth))
     {
       return PROTO_RESULT_INVALID_VALUE;
     }
@@ -1070,7 +1132,9 @@ int resident_device_tree_execute(const uint8_t *location, uint8_t depth,
       location_is_estop(location, depth) || location_is_button(location, depth) ||
       location_is_rail_mode(location, depth) || location_is_rail_output(location, depth) ||
       location_is_flash_current_settings_slot(location, depth) ||
-      location_is_flash_total_settings_slots(location, depth))
+      location_is_flash_bytes_used(location, depth) || location_is_flash_bytes_remaining(location, depth) ||
+      location_is_flash_current_settings_phys_addr(location, depth) ||
+      location_is_flash_current_settings_object_size(location, depth))
   {
     return PROTO_RESULT_INVALID_VALUE;
   }

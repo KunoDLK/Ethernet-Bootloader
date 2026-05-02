@@ -40,10 +40,9 @@ PATHS = {
     "root": [],
     "network": [1],
     "mac": [1, 1],
-    "ipv4": [1, 2],
-    "address": [1, 2, 1],
-    "subnet": [1, 2, 2],
-    "gateway": [1, 2, 3],
+    "address": [1, 2],
+    "subnet": [1, 3],
+    "gateway": [1, 4],
 }
 
 

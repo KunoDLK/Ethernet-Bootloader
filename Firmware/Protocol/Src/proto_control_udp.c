@@ -44,8 +44,12 @@ typedef struct __attribute__((packed))
 #define DEVICE_UID_BYTES               (12U)
 #define BCAST_UID_REQ_MIN_LEN          (DEVICE_UID_BYTES + 1U + sizeof(uint16_t))
 #define BCAST_UID_REPLY_OVERHEAD       (DEVICE_UID_BYTES + 1U + sizeof(uint16_t))
-#define CONTROL_REPLY_PAYLOAD_MAX      (768U)
-#define TREE_RESPONSE_MAX              (512U)
+/* Device-tree LIST payloads (JSON per row) exceed 512B for /Debug/Flash; keep outer reply under LAN MTU headroom */
+#define CONTROL_REPLY_PAYLOAD_MAX      (1536U)
+#define TREE_RESPONSE_MAX              (1488U)
+
+_Static_assert(CONTROL_REPLY_PAYLOAD_MAX >= TREE_RESPONSE_MAX + 2U + 16U + sizeof(int16_t) + sizeof(uint16_t),
+               "DEVICE_TREE_REPLY must accommodate max-depth prefix + TREE_RESPONSE_MAX payload");
 
 extern struct netif gnetif;
 
