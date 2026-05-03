@@ -22,28 +22,7 @@ typedef enum
   BOOT_APP_FAULT_HARD = 4,
 } BootAppFaultReason;
 
-typedef struct
-{
-  uint32_t magic;
-  uint32_t version;
-  uint32_t sequence;
-  uint32_t app_valid;
-  uint32_t app_disabled;
-  uint32_t app_version;
-  uint32_t last_fault_reason;
-  uint32_t last_fault_pc;
-  uint32_t last_fault_lr;
-  uint8_t net_ipv4_addr[4];
-  uint8_t net_ipv4_subnet[4];
-  uint8_t net_ipv4_gateway[4];
-  uint8_t net_mac[6];
-  uint8_t reserved[2];
-  uint32_t hardware_poll_period_ms;
-  uint8_t rail_a_mode;
-  uint8_t rail_b_mode;
-  uint8_t reserved_rails[2];
-  uint32_t crc32; /* legacy field; retained for struct padding / RAM only */
-} BootMetadata;
+/* Persisted configuration is keyed by BOOT_KV_* node ids only; consume via boot_metadata_kv_* and helpers below. */
 
 /* Flash index geometry: bitmap bits + pointers to variable-length blobs. */
 #define BOOT_SETTINGS_INDEX_ENTRIES     (500U)
@@ -57,11 +36,7 @@ _Static_assert(((size_t)(BOOT_METADATA_BASE_ADDR) + BOOT_SETTINGS_INDEX_TOTAL_BY
                    (size_t)(BOOT_METADATA_LIMIT_ADDR),                                           \
                "flash index overlaps metadata sector boundary");
 
-_Static_assert(sizeof(BootMetadata) <= 128U,
-               "BootMetadata unexpectedly large"); /* KV-only disk; RAM struct bounded */
-
 void boot_metadata_init(void);
-const BootMetadata *boot_metadata_get(void);
 bool boot_metadata_app_is_enabled(void);
 bool boot_metadata_app_is_valid(void);
 int boot_metadata_set_app_valid(uint32_t app_version);

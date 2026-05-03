@@ -72,7 +72,13 @@ static void discovery_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
   memcpy(reply.gateway, &ip_2_ip4(&gnetif.gw)->addr, 4U);
   reply.capabilities = 0x0FUL;
   reply.resident_version = 1U;
-  reply.app_version = boot_metadata_get()->app_version;
+  {
+    uint32_t app_ver = 0U;
+    if (boot_metadata_kv_read_u32(BOOT_KV_APP_VERSION, &app_ver) == 0)
+    {
+      reply.app_version = app_ver;
+    }
+  }
 
   struct pbuf *response = pbuf_alloc(PBUF_TRANSPORT, sizeof(reply), PBUF_RAM);
   if (response != 0)

@@ -8,6 +8,35 @@
 #include <stdio.h>
 #include <string.h>
 
+/**
+ * Private RAM image for encode/decode (mirrors canonical BOOT_KV_* fields + unused padding).
+ * External code must use boot_metadata_kv_* or the typed getters/setters—not this layout.
+ */
+typedef struct
+{
+  uint32_t magic;
+  uint32_t version;
+  uint32_t sequence;
+  uint32_t app_valid;
+  uint32_t app_disabled;
+  uint32_t app_version;
+  uint32_t last_fault_reason;
+  uint32_t last_fault_pc;
+  uint32_t last_fault_lr;
+  uint8_t net_ipv4_addr[4];
+  uint8_t net_ipv4_subnet[4];
+  uint8_t net_ipv4_gateway[4];
+  uint8_t net_mac[6];
+  uint8_t reserved[2];
+  uint32_t hardware_poll_period_ms;
+  uint8_t rail_a_mode;
+  uint8_t rail_b_mode;
+  uint8_t reserved_rails[2];
+  uint32_t crc32;
+} BootKvRam;
+
+_Static_assert(sizeof(BootKvRam) <= 128U, "KV RAM decode image unexpectedly large");
+
 #define BOOT_KV_EXTRA_MAX          (48U)
 #define BOOT_KV_EXTRA_VALUE_MAX    (236U)
 #define BOOT_SETTINGS_SCRATCH_MAX  (4096U)
@@ -26,7 +55,7 @@ typedef struct
   uint32_t value;
 } BootU32Decoded;
 
-static BootMetadata g_metadata;
+static BootKvRam g_kv_ram;
 static uint32_t g_active_slot;
 static uint32_t g_active_settings_phys_addr;
 static uint32_t g_active_settings_blob_size_bytes;
@@ -53,20 +82,20 @@ typedef struct
 } BootCanonEntry;
 
 static const BootCanonEntry k_boot_canon[] = {
-    { BOOT_KV_SEQUENCE,      1U, 0U, (uint16_t)offsetof(BootMetadata, sequence), 0U},
-    { BOOT_KV_APP_VALID,     1U, 0U, (uint16_t)offsetof(BootMetadata, app_valid), 0U},
-    { BOOT_KV_APP_DISABLED,  1U, 0U, (uint16_t)offsetof(BootMetadata, app_disabled), 0U},
-    { BOOT_KV_APP_VERSION,   1U, 0U, (uint16_t)offsetof(BootMetadata, app_version), 0U},
-    { BOOT_KV_FAULT_REASON,  1U, 0U, (uint16_t)offsetof(BootMetadata, last_fault_reason), 0U},
-    { BOOT_KV_FAULT_PC,      1U, 0U, (uint16_t)offsetof(BootMetadata, last_fault_pc), 0U},
-    { BOOT_KV_FAULT_LR,      1U, 0U, (uint16_t)offsetof(BootMetadata, last_fault_lr), 0U},
-    { BOOT_KV_IPV4_ADDR,     0U, 1U, (uint16_t)offsetof(BootMetadata, net_ipv4_addr), 4U},
-    { BOOT_KV_IPV4_SUBNET,   0U, 1U, (uint16_t)offsetof(BootMetadata, net_ipv4_subnet), 4U},
-    { BOOT_KV_IPV4_GW,       0U, 1U, (uint16_t)offsetof(BootMetadata, net_ipv4_gateway), 4U},
-    { BOOT_KV_NET_MAC,       0U, 1U, (uint16_t)offsetof(BootMetadata, net_mac), 6U},
-    { BOOT_KV_HW_POLL_MS,    1U, 0U, (uint16_t)offsetof(BootMetadata, hardware_poll_period_ms), 0U},
-    { BOOT_KV_RAIL_A,        1U, 1U, (uint16_t)offsetof(BootMetadata, rail_a_mode), 1U},
-    { BOOT_KV_RAIL_B,        1U, 1U, (uint16_t)offsetof(BootMetadata, rail_b_mode), 1U},
+    { BOOT_KV_SEQUENCE,      1U, 0U, (uint16_t)offsetof(BootKvRam, sequence), 0U},
+    { BOOT_KV_APP_VALID,     1U, 0U, (uint16_t)offsetof(BootKvRam, app_valid), 0U},
+    { BOOT_KV_APP_DISABLED,  1U, 0U, (uint16_t)offsetof(BootKvRam, app_disabled), 0U},
+    { BOOT_KV_APP_VERSION,   1U, 0U, (uint16_t)offsetof(BootKvRam, app_version), 0U},
+    { BOOT_KV_FAULT_REASON,  1U, 0U, (uint16_t)offsetof(BootKvRam, last_fault_reason), 0U},
+    { BOOT_KV_FAULT_PC,      1U, 0U, (uint16_t)offsetof(BootKvRam, last_fault_pc), 0U},
+    { BOOT_KV_FAULT_LR,      1U, 0U, (uint16_t)offsetof(BootKvRam, last_fault_lr), 0U},
+    { BOOT_KV_IPV4_ADDR,     0U, 1U, (uint16_t)offsetof(BootKvRam, net_ipv4_addr), 4U},
+    { BOOT_KV_IPV4_SUBNET,   0U, 1U, (uint16_t)offsetof(BootKvRam, net_ipv4_subnet), 4U},
+    { BOOT_KV_IPV4_GW,       0U, 1U, (uint16_t)offsetof(BootKvRam, net_ipv4_gateway), 4U},
+    { BOOT_KV_NET_MAC,       0U, 1U, (uint16_t)offsetof(BootKvRam, net_mac), 6U},
+    { BOOT_KV_HW_POLL_MS,    1U, 0U, (uint16_t)offsetof(BootKvRam, hardware_poll_period_ms), 0U},
+    { BOOT_KV_RAIL_A,        1U, 1U, (uint16_t)offsetof(BootKvRam, rail_a_mode), 1U},
+    { BOOT_KV_RAIL_B,        1U, 1U, (uint16_t)offsetof(BootKvRam, rail_b_mode), 1U},
 };
 #define BOOT_CANON_COUNT ((uint32_t)(sizeof(k_boot_canon) / sizeof(k_boot_canon[0])))
 
@@ -343,7 +372,7 @@ static uint32_t u32_decoded_fetch(uint32_t node_id)
   return 0U;
 }
 
-static uint32_t canon_u32_lane_read(const BootMetadata *m, const BootCanonEntry *e)
+static uint32_t canon_u32_lane_read(const BootKvRam *m, const BootCanonEntry *e)
 {
   const uint8_t *base = (const uint8_t *)m;
 
@@ -355,7 +384,7 @@ static uint32_t canon_u32_lane_read(const BootMetadata *m, const BootCanonEntry 
   return *(const uint32_t *)(uintptr_t)(base + e->field_offset);
 }
 
-static void canon_u32_lane_write(BootMetadata *m, const BootCanonEntry *e, uint32_t v)
+static void canon_u32_lane_write(BootKvRam *m, const BootCanonEntry *e, uint32_t v)
 {
   uint8_t *base = (uint8_t *)m;
 
@@ -430,7 +459,7 @@ static bool extra_read_payload(uint32_t node_id, const uint8_t **payload_out, ui
   return false;
 }
 
-static void apply_u32_decoded_overlay_from_scratch(BootMetadata *meta)
+static void apply_u32_decoded_overlay_from_scratch(BootKvRam *meta)
 {
   for (uint32_t i = 0U; i < BOOT_CANON_COUNT; i++)
   {
@@ -449,39 +478,39 @@ static void apply_u32_decoded_overlay_from_scratch(BootMetadata *meta)
 
 static void metadata_defaults_ram(void)
 {
-  g_metadata.magic = BOOT_METADATA_MAGIC;
-  g_metadata.version = BOOT_METADATA_VERSION;
-  g_metadata.sequence = 0U;
-  g_metadata.app_valid = 0U;
-  g_metadata.app_disabled = 0U;
-  g_metadata.app_version = 0U;
-  g_metadata.last_fault_reason = BOOT_APP_FAULT_NONE;
-  g_metadata.last_fault_pc = 0U;
-  g_metadata.last_fault_lr = 0U;
-  g_metadata.net_ipv4_addr[0] = RESIDENT_IPV4_ADDR0;
-  g_metadata.net_ipv4_addr[1] = RESIDENT_IPV4_ADDR1;
-  g_metadata.net_ipv4_addr[2] = RESIDENT_IPV4_ADDR2;
-  g_metadata.net_ipv4_addr[3] = RESIDENT_IPV4_ADDR3;
-  g_metadata.net_ipv4_subnet[0] = RESIDENT_IPV4_MASK0;
-  g_metadata.net_ipv4_subnet[1] = RESIDENT_IPV4_MASK1;
-  g_metadata.net_ipv4_subnet[2] = RESIDENT_IPV4_MASK2;
-  g_metadata.net_ipv4_subnet[3] = RESIDENT_IPV4_MASK3;
-  g_metadata.net_ipv4_gateway[0] = RESIDENT_IPV4_GW0;
-  g_metadata.net_ipv4_gateway[1] = RESIDENT_IPV4_GW1;
-  g_metadata.net_ipv4_gateway[2] = RESIDENT_IPV4_GW2;
-  g_metadata.net_ipv4_gateway[3] = RESIDENT_IPV4_GW3;
-  g_metadata.net_mac[0] = 0x00U;
-  g_metadata.net_mac[1] = 0x80U;
-  g_metadata.net_mac[2] = 0xE1U;
-  g_metadata.net_mac[3] = 0x00U;
-  g_metadata.net_mac[4] = 0x00U;
-  g_metadata.net_mac[5] = 0x00U;
-  g_metadata.hardware_poll_period_ms = BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS;
-  g_metadata.rail_a_mode = BOOT_METADATA_DEFAULT_RAIL_MODE;
-  g_metadata.rail_b_mode = BOOT_METADATA_DEFAULT_RAIL_MODE;
-  g_metadata.reserved_rails[0] = 0U;
-  g_metadata.reserved_rails[1] = 0U;
-  g_metadata.crc32 = 0U;
+  g_kv_ram.magic = BOOT_METADATA_MAGIC;
+  g_kv_ram.version = BOOT_METADATA_VERSION;
+  g_kv_ram.sequence = 0U;
+  g_kv_ram.app_valid = 0U;
+  g_kv_ram.app_disabled = 0U;
+  g_kv_ram.app_version = 0U;
+  g_kv_ram.last_fault_reason = BOOT_APP_FAULT_NONE;
+  g_kv_ram.last_fault_pc = 0U;
+  g_kv_ram.last_fault_lr = 0U;
+  g_kv_ram.net_ipv4_addr[0] = RESIDENT_IPV4_ADDR0;
+  g_kv_ram.net_ipv4_addr[1] = RESIDENT_IPV4_ADDR1;
+  g_kv_ram.net_ipv4_addr[2] = RESIDENT_IPV4_ADDR2;
+  g_kv_ram.net_ipv4_addr[3] = RESIDENT_IPV4_ADDR3;
+  g_kv_ram.net_ipv4_subnet[0] = RESIDENT_IPV4_MASK0;
+  g_kv_ram.net_ipv4_subnet[1] = RESIDENT_IPV4_MASK1;
+  g_kv_ram.net_ipv4_subnet[2] = RESIDENT_IPV4_MASK2;
+  g_kv_ram.net_ipv4_subnet[3] = RESIDENT_IPV4_MASK3;
+  g_kv_ram.net_ipv4_gateway[0] = RESIDENT_IPV4_GW0;
+  g_kv_ram.net_ipv4_gateway[1] = RESIDENT_IPV4_GW1;
+  g_kv_ram.net_ipv4_gateway[2] = RESIDENT_IPV4_GW2;
+  g_kv_ram.net_ipv4_gateway[3] = RESIDENT_IPV4_GW3;
+  g_kv_ram.net_mac[0] = 0x00U;
+  g_kv_ram.net_mac[1] = 0x80U;
+  g_kv_ram.net_mac[2] = 0xE1U;
+  g_kv_ram.net_mac[3] = 0x00U;
+  g_kv_ram.net_mac[4] = 0x00U;
+  g_kv_ram.net_mac[5] = 0x00U;
+  g_kv_ram.hardware_poll_period_ms = BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS;
+  g_kv_ram.rail_a_mode = BOOT_METADATA_DEFAULT_RAIL_MODE;
+  g_kv_ram.rail_b_mode = BOOT_METADATA_DEFAULT_RAIL_MODE;
+  g_kv_ram.reserved_rails[0] = 0U;
+  g_kv_ram.reserved_rails[1] = 0U;
+  g_kv_ram.crc32 = 0U;
 }
 
 static int apply_generic_tlv(uint32_t node_id, const uint8_t *val, uint16_t vlen)
@@ -501,7 +530,7 @@ static int apply_generic_tlv(uint32_t node_id, const uint8_t *val, uint16_t vlen
       return 0;
     }
 
-    slot = ((uint8_t *)&g_metadata) + e->field_offset;
+    slot = ((uint8_t *)&g_kv_ram) + e->field_offset;
     memcpy(slot, val, vlen);
     return 0;
   }
@@ -635,10 +664,10 @@ static int parse_and_load_blob(const uint8_t *blob, uint32_t blob_avail_max)
     }
   }
 
-  apply_u32_decoded_overlay_from_scratch(&g_metadata);
+  apply_u32_decoded_overlay_from_scratch(&g_kv_ram);
 
-  g_metadata.magic = BOOT_METADATA_MAGIC;
-  g_metadata.version = BOOT_METADATA_VERSION;
+  g_kv_ram.magic = BOOT_METADATA_MAGIC;
+  g_kv_ram.version = BOOT_METADATA_VERSION;
   return 0;
 }
 
@@ -772,9 +801,9 @@ static void refresh_sorted_kv_view(void)
   g_sorted_count = n;
 }
 
-static int encode_kv_blob_into_scratch(const BootMetadata *m_src, uint32_t *blob_len_out)
+static int encode_kv_blob_into_scratch(const BootKvRam *m_src, uint32_t *blob_len_out)
 {
-  BootMetadata meta = *m_src;
+  BootKvRam meta = *m_src;
   U32Enc u32s[28];
   uint8_t nu32 = 0U;
   uint32_t ci;
@@ -1012,7 +1041,7 @@ restart_after_erase_label:
 
 static int metadata_physical_commit_incremented(void)
 {
-  BootMetadata work = g_metadata;
+  BootKvRam work = g_kv_ram;
   uint32_t blob_len;
 
   /* Increment sequence committed for persisted record */
@@ -1047,7 +1076,7 @@ static int metadata_physical_commit_incremented(void)
   }
 
   (void)HAL_FLASH_Lock();
-  g_metadata = work;
+  g_kv_ram = work;
 
   refresh_sorted_kv_view();
   return 0;
@@ -1284,7 +1313,7 @@ int boot_metadata_kv_read_u32(uint32_t node_id, uint32_t *out)
     return -2;
   }
 
-  *out = canon_u32_lane_read(&g_metadata, e);
+  *out = canon_u32_lane_read(&g_kv_ram, e);
   return 0;
 }
 
@@ -1297,12 +1326,12 @@ int boot_metadata_kv_write_u32_commit(uint32_t node_id, uint32_t value)
     return -2;
   }
 
-  if (canon_u32_lane_read(&g_metadata, e) == value)
+  if (canon_u32_lane_read(&g_kv_ram, e) == value)
   {
     return 0;
   }
 
-  canon_u32_lane_write(&g_metadata, e, value);
+  canon_u32_lane_write(&g_kv_ram, e, value);
   return metadata_physical_commit_incremented();
 }
 
@@ -1327,7 +1356,7 @@ int boot_metadata_kv_read_bytes(uint32_t node_id, uint8_t *buf, uint16_t buf_cap
       return -1;
     }
 
-    memcpy(buf, ((const uint8_t *)&g_metadata) + e_tlv->field_offset, e_tlv->tlv_len);
+    memcpy(buf, ((const uint8_t *)&g_kv_ram) + e_tlv->field_offset, e_tlv->tlv_len);
     *len_out = e_tlv->tlv_len;
     return 0;
   }
@@ -1378,7 +1407,7 @@ int boot_metadata_kv_write_bytes_commit(uint32_t node_id, const uint8_t *data, u
       return -2;
     }
 
-    slot = ((uint8_t *)&g_metadata) + e_tlv->field_offset;
+    slot = ((uint8_t *)&g_kv_ram) + e_tlv->field_offset;
 
     if (memcmp(slot, data, len) == 0)
     {
@@ -1402,64 +1431,75 @@ int boot_metadata_kv_write_bytes_commit(uint32_t node_id, const uint8_t *data, u
   return metadata_physical_commit_incremented();
 }
 
-const BootMetadata *boot_metadata_get(void)
-{
-  return &g_metadata;
-}
-
 bool boot_metadata_app_is_enabled(void)
 {
-  return g_metadata.app_disabled == 0U;
+  uint32_t disabled = 0U;
+
+  if (boot_metadata_kv_read_u32(BOOT_KV_APP_DISABLED, &disabled) != 0)
+  {
+    return true;
+  }
+
+  return disabled == 0U;
 }
 
 bool boot_metadata_app_is_valid(void)
 {
-  return g_metadata.app_valid != 0U;
+  uint32_t valid = 0U;
+
+  if (boot_metadata_kv_read_u32(BOOT_KV_APP_VALID, &valid) != 0)
+  {
+    return false;
+  }
+
+  return valid != 0U;
 }
 
 int boot_metadata_set_app_valid(uint32_t app_version)
 {
-  g_metadata.app_valid = 1U;
-  g_metadata.app_disabled = 0U;
-  g_metadata.app_version = app_version;
+  g_kv_ram.app_valid = 1U;
+  g_kv_ram.app_disabled = 0U;
+  g_kv_ram.app_version = app_version;
 
   return metadata_physical_commit_incremented();
 }
 
 int boot_metadata_disable_app(BootAppFaultReason reason, uint32_t pc, uint32_t lr)
 {
-  g_metadata.app_valid = 0U;
-  g_metadata.app_disabled = 1U;
-  g_metadata.last_fault_reason = (uint32_t)reason;
-  g_metadata.last_fault_pc = pc;
-  g_metadata.last_fault_lr = lr;
+  g_kv_ram.app_valid = 0U;
+  g_kv_ram.app_disabled = 1U;
+  g_kv_ram.last_fault_reason = (uint32_t)reason;
+  g_kv_ram.last_fault_pc = pc;
+  g_kv_ram.last_fault_lr = lr;
 
   return metadata_physical_commit_incremented();
 }
 
 int boot_metadata_enable_app(void)
 {
-  g_metadata.app_disabled = 0U;
-  g_metadata.app_valid = 1U;
+  g_kv_ram.app_disabled = 0U;
+  g_kv_ram.app_valid = 1U;
 
   return metadata_physical_commit_incremented();
 }
 
 void boot_metadata_get_ipv4(uint8_t ip[4], uint8_t subnet[4], uint8_t gateway[4])
 {
+  uint16_t n;
+
   if (ip != NULL)
   {
-    memcpy(ip, g_metadata.net_ipv4_addr, 4U);
+    (void)boot_metadata_kv_read_bytes(BOOT_KV_IPV4_ADDR, ip, 4U, &n);
   }
 
   if (subnet != NULL)
   {
-    memcpy(subnet, g_metadata.net_ipv4_subnet, 4U);
+    (void)boot_metadata_kv_read_bytes(BOOT_KV_IPV4_SUBNET, subnet, 4U, &n);
   }
 
   if (gateway != NULL)
   {
-    memcpy(gateway, g_metadata.net_ipv4_gateway, 4U);
+    (void)boot_metadata_kv_read_bytes(BOOT_KV_IPV4_GW, gateway, 4U, &n);
   }
 }
 
@@ -1470,25 +1510,27 @@ int boot_metadata_set_ipv4(const uint8_t ip[4], const uint8_t subnet[4], const u
     return -1;
   }
 
-  if ((memcmp(g_metadata.net_ipv4_addr, ip, 4U) == 0) &&
-      (memcmp(g_metadata.net_ipv4_subnet, subnet, 4U) == 0) &&
-      (memcmp(g_metadata.net_ipv4_gateway, gateway, 4U) == 0))
+  if ((memcmp(g_kv_ram.net_ipv4_addr, ip, 4U) == 0) &&
+      (memcmp(g_kv_ram.net_ipv4_subnet, subnet, 4U) == 0) &&
+      (memcmp(g_kv_ram.net_ipv4_gateway, gateway, 4U) == 0))
   {
     return 0;
   }
 
-  memcpy(g_metadata.net_ipv4_addr, ip, 4U);
-  memcpy(g_metadata.net_ipv4_subnet, subnet, 4U);
-  memcpy(g_metadata.net_ipv4_gateway, gateway, 4U);
+  memcpy(g_kv_ram.net_ipv4_addr, ip, 4U);
+  memcpy(g_kv_ram.net_ipv4_subnet, subnet, 4U);
+  memcpy(g_kv_ram.net_ipv4_gateway, gateway, 4U);
 
   return metadata_physical_commit_incremented();
 }
 
 void boot_metadata_get_mac(uint8_t mac[6])
 {
+  uint16_t n;
+
   if (mac != NULL)
   {
-    memcpy(mac, g_metadata.net_mac, 6U);
+    (void)boot_metadata_kv_read_bytes(BOOT_KV_NET_MAC, mac, 6U, &n);
   }
 }
 
@@ -1499,19 +1541,26 @@ int boot_metadata_set_mac(const uint8_t mac[6])
     return -1;
   }
 
-  if (memcmp(g_metadata.net_mac, mac, 6U) == 0)
+  if (memcmp(g_kv_ram.net_mac, mac, 6U) == 0)
   {
     return 0;
   }
 
-  memcpy(g_metadata.net_mac, mac, 6U);
+  memcpy(g_kv_ram.net_mac, mac, 6U);
 
   return metadata_physical_commit_incremented();
 }
 
 uint32_t boot_metadata_get_hardware_poll_period_ms(void)
 {
-  return g_metadata.hardware_poll_period_ms;
+  uint32_t ms = BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS;
+
+  if (boot_metadata_kv_read_u32(BOOT_KV_HW_POLL_MS, &ms) != 0)
+  {
+    ms = BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS;
+  }
+
+  return ms;
 }
 
 int boot_metadata_set_hardware_poll_period_ms(uint32_t period_ms)
@@ -1523,24 +1572,38 @@ int boot_metadata_set_hardware_poll_period_ms(uint32_t period_ms)
     use = BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS;
   }
 
-  if (use == g_metadata.hardware_poll_period_ms)
+  if (use == g_kv_ram.hardware_poll_period_ms)
   {
     return 0;
   }
 
-  g_metadata.hardware_poll_period_ms = use;
+  g_kv_ram.hardware_poll_period_ms = use;
 
   return metadata_physical_commit_incremented();
 }
 
 uint8_t boot_metadata_get_rail_a_mode(void)
 {
-  return rail_mode_read_clamped(g_metadata.rail_a_mode);
+  uint32_t v = (uint32_t)BOOT_METADATA_DEFAULT_RAIL_MODE;
+
+  if (boot_metadata_kv_read_u32(BOOT_KV_RAIL_A, &v) != 0)
+  {
+    v = BOOT_METADATA_DEFAULT_RAIL_MODE;
+  }
+
+  return rail_mode_read_clamped((uint8_t)(v & 0xFFU));
 }
 
 uint8_t boot_metadata_get_rail_b_mode(void)
 {
-  return rail_mode_read_clamped(g_metadata.rail_b_mode);
+  uint32_t v = (uint32_t)BOOT_METADATA_DEFAULT_RAIL_MODE;
+
+  if (boot_metadata_kv_read_u32(BOOT_KV_RAIL_B, &v) != 0)
+  {
+    v = BOOT_METADATA_DEFAULT_RAIL_MODE;
+  }
+
+  return rail_mode_read_clamped((uint8_t)(v & 0xFFU));
 }
 
 int boot_metadata_set_rail_a_mode(uint8_t mode)
@@ -1552,12 +1615,12 @@ int boot_metadata_set_rail_a_mode(uint8_t mode)
     return -1;
   }
 
-  if (g_metadata.rail_a_mode == clipped)
+  if (g_kv_ram.rail_a_mode == clipped)
   {
     return 0;
   }
 
-  g_metadata.rail_a_mode = clipped;
+  g_kv_ram.rail_a_mode = clipped;
 
   return metadata_physical_commit_incremented();
 }
@@ -1571,12 +1634,12 @@ int boot_metadata_set_rail_b_mode(uint8_t mode)
     return -1;
   }
 
-  if (g_metadata.rail_b_mode == clipped)
+  if (g_kv_ram.rail_b_mode == clipped)
   {
     return 0;
   }
 
-  g_metadata.rail_b_mode = clipped;
+  g_kv_ram.rail_b_mode = clipped;
 
   return metadata_physical_commit_incremented();
 }

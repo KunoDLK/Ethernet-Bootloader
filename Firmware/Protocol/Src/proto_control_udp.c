@@ -312,7 +312,8 @@ static ProtoMessageType build_command_reply(ProtoMessageType request_type,
 
       payload.uptime_ms = osKernelGetTickCount();
       payload.resident_version = 1U;
-      payload.app_version = boot_metadata_get()->app_version;
+      payload.app_version = 0U;
+      (void)boot_metadata_kv_read_u32(BOOT_KV_APP_VERSION, &payload.app_version);
       memcpy(reply_payload, &payload, sizeof(payload));
       *reply_payload_len = sizeof(payload);
       return PROTO_MSG_PING_REPLY;
