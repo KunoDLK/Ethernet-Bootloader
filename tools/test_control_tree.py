@@ -43,6 +43,7 @@ PATHS = {
     "address": [1, 2],
     "subnet": [1, 3],
     "gateway": [1, 4],
+    "dhcp": [1, 5],
 }
 
 
@@ -56,11 +57,14 @@ def parse_args() -> argparse.Namespace:
     list_cmd.add_argument("path", choices=PATHS.keys(), default="root", nargs="?")
 
     get_cmd = subcommands.add_parser("get", help="get a leaf value")
-    get_cmd.add_argument("path", choices=["mac", "address", "subnet", "gateway"])
+    get_cmd.add_argument("path", choices=["mac", "address", "subnet", "gateway", "dhcp"])
 
-    set_cmd = subcommands.add_parser("set", help="set an IPv4 leaf value")
-    set_cmd.add_argument("path", choices=["address", "subnet", "gateway"])
-    set_cmd.add_argument("value", help="IPv4 value, e.g. 192.168.1.50")
+    set_cmd = subcommands.add_parser("set", help="set a leaf value")
+    set_cmd.add_argument("path", choices=["address", "subnet", "gateway", "dhcp"])
+    set_cmd.add_argument(
+        "value",
+        help="IPv4 value (address/subnet/gateway) or Enabled/Disabled or 0/1 (dhcp)",
+    )
 
     parser.set_defaults(command="list")
     return parser.parse_args()

@@ -18,6 +18,7 @@
 #define BOOT_KV_HW_POLL_MS             (12U)
 #define BOOT_KV_RAIL_A                 (13U)
 #define BOOT_KV_RAIL_B                 (14U)
+#define BOOT_KV_NET_DHCP               (15U)
 
 #define BOOT_KV_APP_STORAGE_BASE       (0xA0000000UL)
 #define BOOT_KV_APP_STORAGE_MASK       (0x07FFFFFFUL)

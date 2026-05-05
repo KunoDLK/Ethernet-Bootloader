@@ -25,10 +25,10 @@ void resident_main_task(void *argument)
   (void)resident_led_set_status(APP_LED_STATUS_0, APP_LED_COLOR_RED, APP_LED_MODE_STATIC, 0U);
   boot_metadata_init();
   boot_app_manager_init();
+  resident_network_init();
   resident_device_tree_init();
   resident_hardware_init();
   resident_led_init();
-  resident_network_init();
   resident_security_init();
   resident_api_init();
 

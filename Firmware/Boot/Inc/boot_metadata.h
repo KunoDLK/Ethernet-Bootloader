@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 #define BOOT_METADATA_MAGIC             (0x4D455441UL) /* "META" RAM image only */
-#define BOOT_METADATA_VERSION           (6U)
+#define BOOT_METADATA_VERSION           (7U)
 #define BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS (10U)
 #define BOOT_METADATA_DEFAULT_RAIL_MODE (0U) /* 0=Disabled, 1=Enabled, 2=Follow Estop */
 
@@ -44,6 +44,11 @@ int boot_metadata_disable_app(BootAppFaultReason reason, uint32_t pc, uint32_t l
 int boot_metadata_enable_app(void);
 void boot_metadata_get_ipv4(uint8_t ip[4], uint8_t subnet[4], uint8_t gateway[4]);
 int boot_metadata_set_ipv4(const uint8_t ip[4], const uint8_t subnet[4], const uint8_t gateway[4]);
+/** Stored preference: 0 = static IPv4 from flash, non-zero = use DHCP (default enabled). */
+uint8_t boot_metadata_get_net_dhcp_enabled(void);
+int boot_metadata_set_net_dhcp_enabled(uint8_t enabled);
+/** True if addr is 0.0.0.0 or 255.255.255.255 (invalid for static host / mask / gateway in flash). */
+bool boot_metadata_ipv4_is_unusable_reserved(const uint8_t addr[4]);
 void boot_metadata_get_mac(uint8_t mac[6]);
 int boot_metadata_set_mac(const uint8_t mac[6]);
 uint32_t boot_metadata_get_hardware_poll_period_ms(void);

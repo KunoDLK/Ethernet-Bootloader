@@ -39,8 +39,12 @@ DEFAULT_BIND_IP = "192.168.1.99"
 DEFAULT_TARGET = "255.255.255.255"
 DEFAULT_REFRESH_S = 0.5
 DEFAULT_REQUEST_TIMEOUT_S = 1.0
-DEFAULT_WRITE_TIMEOUT_S = 8.0
+DEFAULT_WRITE_TIMEOUT_S = 0.5
 TREE_REFRESH_S = 0.5
+PASSIVE_TREE_TIMEOUT_S = 0.1
+DEFAULT_CONTROL_RTT_S = 0.01
+MIN_CONTROL_RETRY_S = 0.002
+MAX_CONTROL_RETRY_S = 0.5
 
 ACCESS_READ = 0x8
 ACCESS_WRITE = 0x4
@@ -58,6 +62,7 @@ STANDARD_REBOOT_PATH = [2]
 IPV4_ADDRESS_PATH = [1, 2]
 IPV4_SUBNET_PATH = [1, 3]
 IPV4_GATEWAY_PATH = [1, 4]
+IPV4_DHCP_PATH = [1, 5]
 DEVICE_MENU_ITEMS = [
     "Device Tree",
     "Write Program",
@@ -399,6 +404,16 @@ def format_age(seconds: float) -> str:
     return f"{int(seconds // 60)}m"
 
 
+def format_rtt(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown"
+    if seconds < 0.001:
+        return f"{seconds * 1_000_000:.0f}us"
+    if seconds < 1:
+        return f"{seconds * 1000:.1f}ms"
+    return f"{seconds:.3f}s"
+
+
 def metadata_string(metadata: dict, *keys: str) -> str:
     for key in keys:
         value = metadata.get(key)
@@ -526,82 +541,106 @@ def _ignore_udp_recv_oserror(exc: OSError) -> bool:
 def send_device_tree_request(
     bind_ip: str,
     target: str,
+    fallback_target: str | None,
     uid: bytes,
     op: int,
     location: list[int],
     op_payload: bytes = b"",
     timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
-    on_response: Callable[[], None] | None = None,
+    normal_rtt_s: float = DEFAULT_CONTROL_RTT_S,
+    on_response: Callable[[str, float], None] | None = None,
 ) -> tuple[bool, bytes, str]:
-    transaction_id = random.SystemRandom().randrange(0, 0x1_0000_0000)
     tree_payload = build_device_tree_request(op, location, op_payload)
     inner = bytes([PROTO_MSG_DEVICETREE_REQ]) + struct.pack("<H", len(tree_payload)) + tree_payload
     payload = uid + inner
-    packet = (
-        COMMAND_HEADER.pack(
-            PROTO_MAGIC,
-            PROTO_VERSION,
-            PROTO_MSG_BCAST_UID_REQ,
-            0,
-            transaction_id,
-            len(payload),
-            0,
+    transaction_id = random.SystemRandom().randrange(0, 0x1_0000_0000)
+
+    def attempt(dst: str, wait_s: float) -> tuple[bool, bytes, str]:
+        packet = (
+            COMMAND_HEADER.pack(
+                PROTO_MAGIC,
+                PROTO_VERSION,
+                PROTO_MSG_BCAST_UID_REQ,
+                0,
+                transaction_id,
+                len(payload),
+                0,
+            )
+            + payload
         )
-        + payload
-    )
 
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((bind_ip, 0))
-        sock.settimeout(0.05)
-        sock.sendto(packet, (target, CONTROL_PORT))
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((bind_ip, 0))
+            sock.settimeout(0.05)
+            started_at = time.monotonic()
+            sock.sendto(packet, (dst, CONTROL_PORT))
 
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            try:
-                data, _source = sock.recvfrom(2048)
-            except socket.timeout:
-                continue
-            except OSError as exc:
-                if _ignore_udp_recv_oserror(exc):
+            deadline = started_at + wait_s
+            while time.monotonic() < deadline:
+                try:
+                    data, source = sock.recvfrom(2048)
+                except socket.timeout:
                     continue
-                raise
+                except OSError as exc:
+                    if _ignore_udp_recv_oserror(exc):
+                        continue
+                    raise
 
-            if len(data) < COMMAND_HEADER.size:
-                continue
-            magic, version, msg_type, _flags, rx_tx, payload_len, _reserved = COMMAND_HEADER.unpack_from(data)
-            if (
-                magic != PROTO_MAGIC
-                or version != PROTO_VERSION
-                or msg_type != PROTO_MSG_BCAST_UID_REPLY
-                or rx_tx != transaction_id
-            ):
-                continue
+                if len(data) < COMMAND_HEADER.size:
+                    continue
+                magic, version, msg_type, _flags, rx_tx, payload_len, _reserved = COMMAND_HEADER.unpack_from(data)
+                if (
+                    magic != PROTO_MAGIC
+                    or version != PROTO_VERSION
+                    or msg_type != PROTO_MSG_BCAST_UID_REPLY
+                    or rx_tx != transaction_id
+                ):
+                    continue
 
-            reply_payload = data[COMMAND_HEADER.size : COMMAND_HEADER.size + payload_len]
-            if len(reply_payload) < 15 or reply_payload[:12] != uid:
-                continue
+                reply_payload = data[COMMAND_HEADER.size : COMMAND_HEADER.size + payload_len]
+                if len(reply_payload) < 15 or reply_payload[:12] != uid:
+                    continue
 
-            if on_response is not None:
-                on_response()
+                elapsed_s = max(time.monotonic() - started_at, 0.000001)
+                if on_response is not None:
+                    on_response(source[0], elapsed_s)
 
-            inner_type = reply_payload[12]
-            inner_len = struct.unpack_from("<H", reply_payload, 13)[0]
-            inner_payload = reply_payload[15 : 15 + inner_len]
-            if inner_type == PROTO_MSG_ERROR_REPLY:
-                result, detail = struct.unpack_from("<hH", inner_payload)
-                return False, b"", f"error {result} detail {detail}"
-            if inner_type != PROTO_MSG_DEVICETREE_REPLY or len(inner_payload) < 6:
-                return False, b"", f"unexpected reply 0x{inner_type:02x}"
+                inner_type = reply_payload[12]
+                inner_len = struct.unpack_from("<H", reply_payload, 13)[0]
+                inner_payload = reply_payload[15 : 15 + inner_len]
+                if inner_type == PROTO_MSG_ERROR_REPLY:
+                    result, detail = struct.unpack_from("<hH", inner_payload)
+                    return False, b"", f"error {result} detail {detail}"
+                if inner_type != PROTO_MSG_DEVICETREE_REPLY or len(inner_payload) < 6:
+                    return False, b"", f"unexpected reply 0x{inner_type:02x}"
 
-            depth = inner_payload[1]
-            result_offset = 2 + depth
-            result, response_len = struct.unpack_from("<hH", inner_payload, result_offset)
-            response = inner_payload[result_offset + 4 : result_offset + 4 + response_len]
-            if result != 0:
-                return False, b"", f"request failed result {result}"
-            return True, response, "ok"
+                depth = inner_payload[1]
+                result_offset = 2 + depth
+                result, response_len = struct.unpack_from("<hH", inner_payload, result_offset)
+                response = inner_payload[result_offset + 4 : result_offset + 4 + response_len]
+                if result != 0:
+                    return False, b"", f"request failed result {result}"
+                return True, response, "ok"
+
+        return False, b"", "request timed out"
+
+    max_retry_s = max(min(timeout_s, MAX_CONTROL_RETRY_S), MIN_CONTROL_RETRY_S)
+    retry_s = min(max(normal_rtt_s * 2.0, MIN_CONTROL_RETRY_S), max_retry_s)
+    while retry_s <= max_retry_s:
+        ok, response, message = attempt(target, retry_s)
+        if ok:
+            return ok, response, message
+        if message != "request timed out":
+            return ok, response, message
+        retry_s *= 2.0
+
+    if fallback_target and fallback_target != target:
+        ok2, response2, message2 = attempt(fallback_target, MAX_CONTROL_RETRY_S)
+        if ok2:
+            return ok2, response2, "ok (broadcast fallback)"
+        return ok2, response2, message2
 
     return False, b"", "request timed out"
 
@@ -609,22 +648,26 @@ def send_device_tree_request(
 def set_device_tree_value(
     bind_ip: str,
     target: str,
+    fallback_target: str | None,
     uid: bytes,
     location: list[int],
     value: str,
     timeout_s: float = DEFAULT_WRITE_TIMEOUT_S,
-    on_response: Callable[[], None] | None = None,
+    normal_rtt_s: float = DEFAULT_CONTROL_RTT_S,
+    on_response: Callable[[str, float], None] | None = None,
 ) -> tuple[bool, str, bool]:
     encoded = value.encode("utf-8")
     ok, response, message = send_device_tree_request(
         bind_ip,
         target,
+        fallback_target,
         uid,
         DEVICE_TREE_OP_SET,
         location,
         struct.pack("<H", len(encoded)) + encoded,
-        timeout_s,
-        on_response,
+        timeout_s=timeout_s,
+        normal_rtt_s=normal_rtt_s,
+        on_response=on_response,
     )
     if not ok:
         return False, message, False
@@ -636,22 +679,26 @@ def set_device_tree_value(
 def execute_device_tree_node(
     bind_ip: str,
     target: str,
+    fallback_target: str | None,
     uid: bytes,
     location: list[int],
     args: str = "",
     timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
-    on_response: Callable[[], None] | None = None,
+    normal_rtt_s: float = DEFAULT_CONTROL_RTT_S,
+    on_response: Callable[[str, float], None] | None = None,
 ) -> tuple[bool, str]:
     encoded = args.encode("utf-8")
     ok, _response, message = send_device_tree_request(
         bind_ip,
         target,
+        fallback_target,
         uid,
         DEVICE_TREE_OP_EXECUTE,
         location,
         struct.pack("<H", len(encoded)) + encoded,
-        timeout_s,
-        on_response,
+        timeout_s=timeout_s,
+        normal_rtt_s=normal_rtt_s,
+        on_response=on_response,
     )
     return ok, "executed" if ok else message
 
@@ -659,16 +706,22 @@ def execute_device_tree_node(
 def list_device_tree_node(
     bind_ip: str,
     target: str,
+    fallback_target: str | None,
     uid: bytes,
     location: list[int],
-    on_response: Callable[[], None] | None = None,
+    timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
+    normal_rtt_s: float = DEFAULT_CONTROL_RTT_S,
+    on_response: Callable[[str, float], None] | None = None,
 ) -> tuple[bool, list[TreeItem], str]:
     ok, response, message = send_device_tree_request(
         bind_ip,
         target,
+        fallback_target,
         uid,
         DEVICE_TREE_OP_LIST,
         location,
+        timeout_s=timeout_s,
+        normal_rtt_s=normal_rtt_s,
         on_response=on_response,
     )
     if not ok:
@@ -717,16 +770,22 @@ def list_device_tree_node(
 def get_device_tree_value(
     bind_ip: str,
     target: str,
+    fallback_target: str | None,
     uid: bytes,
     location: list[int],
-    on_response: Callable[[], None] | None = None,
+    timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
+    normal_rtt_s: float = DEFAULT_CONTROL_RTT_S,
+    on_response: Callable[[str, float], None] | None = None,
 ) -> tuple[bool, str, str]:
     ok, response, message = send_device_tree_request(
         bind_ip,
         target,
+        fallback_target,
         uid,
         DEVICE_TREE_OP_GET,
         location,
+        timeout_s=timeout_s,
+        normal_rtt_s=normal_rtt_s,
         on_response=on_response,
     )
     if not ok:
@@ -964,7 +1023,7 @@ def build_screen(
     target: str,
     port: int,
     error: str,
-    broadcast_when_adapter_ip_matches_device: bool,
+    control_rtt_by_uid: dict[bytes, float],
 ) -> str:
     size = shutil.get_terminal_size((100, 30))
     cols = max(size.columns, 60)
@@ -1001,10 +1060,10 @@ def build_screen(
             error,
             now,
             right_w,
-            broadcast_when_adapter_ip_matches_device,
+            control_rtt_by_uid,
         )
         bindings = (
-            " Up/Down: select device   Enter: open device   Space: ambiguous-IP broadcast"
+            " Up/Down: select device   Enter: open device"
             "   R: refresh discovery   Q: quit"
         )
     else:
@@ -1042,6 +1101,7 @@ def build_screen(
             status_message,
             now,
             right_w,
+            control_rtt_by_uid.get(device.uid) if device else None,
         )
         if mode == "edit_leaf":
             if edit_enum_values:
@@ -1163,9 +1223,8 @@ def build_discovery_right_pane(
     error: str,
     now: float,
     width: int,
-    broadcast_when_adapter_ip_matches_device: bool,
+    control_rtt_by_uid: dict[bytes, float],
 ) -> list[str]:
-    checkbox = "[x]" if broadcast_when_adapter_ip_matches_device else "[ ]"
     lines = [
         " Device information",
         "",
@@ -1173,9 +1232,6 @@ def build_discovery_right_pane(
         f" Local bind IP    : {style_data(bind_ip)}",
         f" Local subnet     : {style_data(selected_interface.subnet if selected_interface else 'unknown')}",
         f" Local gateway    : {style_data(selected_interface.gateway if selected_interface else 'unknown')}",
-        "",
-        f" {checkbox} Broadcast if IP ambiguous (host match / duplicate device IP)",
-        "     (UID still selects device)",
         "",
     ]
 
@@ -1209,6 +1265,7 @@ def build_discovery_right_pane(
             f" Last tx id       : {style_data(f'0x{device.transaction_id:08x}')}",
             f" First seen       : {style_data(format_age(now - device.first_seen))} ago",
             f" Last seen        : {style_data(format_age(now - device.last_seen))} ago",
+            f" RTT              : {style_data(format_rtt(control_rtt_by_uid.get(device.uid)))}",
             "",
             " Press Enter to manage this device.",
         ]
@@ -1305,6 +1362,7 @@ def build_device_menu_right_pane(
     status_message: str,
     now: float,
     width: int,
+    control_rtt_s: float | None,
 ) -> list[str]:
     if device is None:
         return [" Device details", "", " Device disappeared from discovery."]
@@ -1315,6 +1373,7 @@ def build_device_menu_right_pane(
         "",
         f" Device IP        : {style_data(device.ip)}",
         f" Last seen        : {style_data(format_age(now - device.last_seen))} ago",
+        f" RTT              : {style_data(format_rtt(control_rtt_s))}",
         "",
     ]
 
@@ -1482,7 +1541,7 @@ def main() -> int:
     # IPv4 tree writes update flash only; lwIP uses new values after reboot. Keep discovery IP
     # until reboot succeeds, otherwise control packets (e.g. Reboot) still go to the old address.
     pending_network_patch_by_uid: dict[bytes, dict[str, str]] = {}
-    broadcast_when_adapter_ip_matches_device = True
+    control_rtt_by_uid: dict[bytes, float] = {}
 
     def effective_control_target(device: Device, known_devices: list[Device]) -> str:
         return device_control_target(
@@ -1491,12 +1550,23 @@ def main() -> int:
             selected_interface,
             args.target,
             known_devices,
-            broadcast_when_adapter_ip_matches_device=broadcast_when_adapter_ip_matches_device,
+            broadcast_when_adapter_ip_matches_device=True,
         )
 
-    def mark_device_seen(uid: bytes) -> None:
+    def normal_control_rtt(uid: bytes) -> float:
+        return control_rtt_by_uid.get(uid, DEFAULT_CONTROL_RTT_S)
+
+    def mark_device_seen(uid: bytes, source_ip: str | None = None, elapsed_s: float | None = None) -> None:
         if worker is not None:
             worker.mark_seen(uid)
+            if source_ip and is_usable_ipv4(source_ip):
+                worker.patch_device_network(uid, ip=source_ip)
+        if elapsed_s is not None and elapsed_s > 0:
+            previous = control_rtt_by_uid.get(uid)
+            if previous is None:
+                control_rtt_by_uid[uid] = elapsed_s
+            else:
+                control_rtt_by_uid[uid] = (previous * 0.8) + (elapsed_s * 0.2)
 
     def apply_pending_network_patch(uid: bytes) -> None:
         """After reboot, lwIP uses new IPv4 from flash — align cached discovery record."""
@@ -1519,15 +1589,20 @@ def main() -> int:
         update_status: bool = True,
         clear_read_value: bool = True,
         preserve_items_on_error: bool = False,
+        fallback_on_timeout: bool = True,
+        timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
     ) -> None:
         nonlocal tree_items, tree_selected_index, tree_value, status_message
         ctrl_target = effective_control_target(device, known_devices)
         ok, items, message = list_device_tree_node(
             args.bind_ip,
             ctrl_target,
+            args.target if fallback_on_timeout else None,
             device.uid,
             tree_location,
-            on_response=lambda uid=device.uid: mark_device_seen(uid),
+            timeout_s=timeout_s,
+            normal_rtt_s=normal_control_rtt(device.uid),
+            on_response=lambda source_ip, elapsed_s, uid=device.uid: mark_device_seen(uid, source_ip, elapsed_s),
         )
         if ok:
             tree_items = [item for item in items if not is_implemented_in_device_menu(tree_location, item)]
@@ -1571,7 +1646,9 @@ def main() -> int:
                         devices,
                         update_status=False,
                         clear_read_value=False,
-                        preserve_items_on_error=(mode == "edit_leaf"),
+                        preserve_items_on_error=True,
+                        fallback_on_timeout=True,
+                        timeout_s=PASSIVE_TREE_TIMEOUT_S,
                     )
                     last_tree_refresh = now
 
@@ -1600,7 +1677,7 @@ def main() -> int:
                         target=args.target,
                         port=args.port,
                         error=error,
-                        broadcast_when_adapter_ip_matches_device=broadcast_when_adapter_ip_matches_device,
+                        control_rtt_by_uid=control_rtt_by_uid,
                     )
                 )
 
@@ -1629,11 +1706,6 @@ def main() -> int:
                     time.sleep(0.05)
                     continue
 
-                if mode == "discovery" and key == " ":
-                    broadcast_when_adapter_ip_matches_device = not broadcast_when_adapter_ip_matches_device
-                    time.sleep(0.05)
-                    continue
-
                 if mode == "edit_leaf":
                     if key in ("\x1b", "b"):
                         mode = "raw_tree"
@@ -1654,10 +1726,14 @@ def main() -> int:
                         result, message, reboot_required = set_device_tree_value(
                             args.bind_ip,
                             ctrl_target,
+                            args.target,
                             devices[selected_device_index].uid,
                             edit_path,
                             edit_new_value,
-                            on_response=lambda uid=devices[selected_device_index].uid: mark_device_seen(uid),
+                            normal_rtt_s=normal_control_rtt(devices[selected_device_index].uid),
+                            on_response=lambda source_ip, elapsed_s, uid=devices[selected_device_index].uid: mark_device_seen(
+                                uid, source_ip, elapsed_s
+                            ),
                         )
                         write_elapsed_ms = int((time.monotonic() - write_started) * 1000)
                         if result:
@@ -1760,9 +1836,13 @@ def main() -> int:
                             ok, message = execute_device_tree_node(
                                 args.bind_ip,
                                 effective_control_target(devices[selected_device_index], devices),
+                                args.target,
                                 devices[selected_device_index].uid,
                                 execute_path,
-                                on_response=lambda uid=devices[selected_device_index].uid: mark_device_seen(uid),
+                                normal_rtt_s=normal_control_rtt(devices[selected_device_index].uid),
+                                on_response=lambda source_ip, elapsed_s, uid=devices[selected_device_index].uid: mark_device_seen(
+                                    uid, source_ip, elapsed_s
+                                ),
                             )
                             execute_elapsed_ms = int((time.monotonic() - execute_started) * 1000)
                             if ok and is_standard_reboot_path(execute_path):
@@ -1779,9 +1859,13 @@ def main() -> int:
                             ok, value, message = get_device_tree_value(
                                 args.bind_ip,
                                 effective_control_target(devices[selected_device_index], devices),
+                                args.target,
                                 devices[selected_device_index].uid,
                                 tree_location + [item.node_id],
-                                on_response=lambda uid=devices[selected_device_index].uid: mark_device_seen(uid),
+                                normal_rtt_s=normal_control_rtt(devices[selected_device_index].uid),
+                                on_response=lambda source_ip, elapsed_s, uid=devices[selected_device_index].uid: mark_device_seen(
+                                    uid, source_ip, elapsed_s
+                                ),
                             )
                             if ok:
                                 tree_value = value
@@ -1845,9 +1929,13 @@ def main() -> int:
                         ok, message = execute_device_tree_node(
                             args.bind_ip,
                             effective_control_target(devices[selected_device_index], devices),
+                            args.target,
                             devices[selected_device_index].uid,
                             STANDARD_REBOOT_PATH,
-                            on_response=lambda uid=devices[selected_device_index].uid: mark_device_seen(uid),
+                            normal_rtt_s=normal_control_rtt(devices[selected_device_index].uid),
+                            on_response=lambda source_ip, elapsed_s, uid=devices[selected_device_index].uid: mark_device_seen(
+                                uid, source_ip, elapsed_s
+                            ),
                         )
                         execute_elapsed_ms = int((time.monotonic() - execute_started) * 1000)
                         if ok:

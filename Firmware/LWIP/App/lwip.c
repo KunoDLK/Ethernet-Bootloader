@@ -28,6 +28,10 @@
 #endif /* MDK ARM Compiler */
 #include "ethernetif.h"
 #include "FreeRTOS.h"
+#if LWIP_DHCP
+#include "lwip/dhcp.h"
+#endif
+#include "lwipopts.h"
 #include "task.h"
 #include <stdio.h>
 #include <string.h>
@@ -68,18 +72,48 @@ void MX_LWIP_Init(void)
   /* Initialize the LwIP stack with RTOS */
   tcpip_init( NULL, NULL );
 
-  /* Static IPv4 configuration */
   uint8_t stored_ip[4];
   uint8_t stored_netmask[4];
   uint8_t stored_gw[4];
-  boot_metadata_get_ipv4(stored_ip, stored_netmask, stored_gw);
+  const uint8_t use_dhcp = boot_metadata_get_net_dhcp_enabled();
+
+  if (use_dhcp != 0U)
+  {
+    memset(stored_ip, 0, sizeof(stored_ip));
+    memset(stored_netmask, 0, sizeof(stored_netmask));
+    memset(stored_gw, 0, sizeof(stored_gw));
+    printf("lwIP: DHCP enabled (preference from metadata)\r\n");
+  }
+  else
+  {
+    boot_metadata_get_ipv4(stored_ip, stored_netmask, stored_gw);
+    if (boot_metadata_ipv4_is_unusable_reserved(stored_ip) ||
+        boot_metadata_ipv4_is_unusable_reserved(stored_netmask) ||
+        boot_metadata_ipv4_is_unusable_reserved(stored_gw))
+    {
+      printf("lwIP: stored IPv4/mask/gateway is 0.0.0.0 or 255.255.255.255; using build defaults\r\n");
+      stored_ip[0] = RESIDENT_IPV4_ADDR0;
+      stored_ip[1] = RESIDENT_IPV4_ADDR1;
+      stored_ip[2] = RESIDENT_IPV4_ADDR2;
+      stored_ip[3] = RESIDENT_IPV4_ADDR3;
+      stored_netmask[0] = RESIDENT_IPV4_MASK0;
+      stored_netmask[1] = RESIDENT_IPV4_MASK1;
+      stored_netmask[2] = RESIDENT_IPV4_MASK2;
+      stored_netmask[3] = RESIDENT_IPV4_MASK3;
+      stored_gw[0] = RESIDENT_IPV4_GW0;
+      stored_gw[1] = RESIDENT_IPV4_GW1;
+      stored_gw[2] = RESIDENT_IPV4_GW2;
+      stored_gw[3] = RESIDENT_IPV4_GW3;
+    }
+    printf("lwIP static IPv4: %u.%u.%u.%u mask %u.%u.%u.%u gw %u.%u.%u.%u\r\n",
+           stored_ip[0], stored_ip[1], stored_ip[2], stored_ip[3],
+           stored_netmask[0], stored_netmask[1], stored_netmask[2], stored_netmask[3],
+           stored_gw[0], stored_gw[1], stored_gw[2], stored_gw[3]);
+  }
+
   IP4_ADDR(&ipaddr, stored_ip[0], stored_ip[1], stored_ip[2], stored_ip[3]);
   IP4_ADDR(&netmask, stored_netmask[0], stored_netmask[1], stored_netmask[2], stored_netmask[3]);
   IP4_ADDR(&gw, stored_gw[0], stored_gw[1], stored_gw[2], stored_gw[3]);
-  printf("lwIP static IPv4: %u.%u.%u.%u mask %u.%u.%u.%u gw %u.%u.%u.%u\r\n",
-         stored_ip[0], stored_ip[1], stored_ip[2], stored_ip[3],
-         stored_netmask[0], stored_netmask[1], stored_netmask[2], stored_netmask[3],
-         stored_gw[0], stored_gw[1], stored_gw[2], stored_gw[3]);
 
   /* add the network interface (IPv4/IPv6) with RTOS */
   netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL, &ethernetif_init, &tcpip_input);
@@ -89,6 +123,16 @@ void MX_LWIP_Init(void)
 
   /* We must always bring the network interface up connection or not... */
   netif_set_up(&gnetif);
+
+#if LWIP_DHCP
+  if (use_dhcp != 0U)
+  {
+    if (dhcp_start(&gnetif) != ERR_OK)
+    {
+      printf("lwIP: dhcp_start failed\r\n");
+    }
+  }
+#endif
 
   /* Set the link callback function, this function is called on change of link status*/
   netif_set_link_callback(&gnetif, ethernet_link_status_updated);

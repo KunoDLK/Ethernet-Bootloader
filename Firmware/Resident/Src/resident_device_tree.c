@@ -5,6 +5,7 @@
 #include "lwip/netif.h"
 #include "proto_common.h"
 #include "resident_hardware.h"
+#include "resident_network.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -21,6 +22,7 @@ extern struct netif gnetif;
 #define TREE_ID_IPV4_ADDRESS            (2U)
 #define TREE_ID_IPV4_SUBNET             (3U)
 #define TREE_ID_IPV4_GATEWAY            (4U)
+#define TREE_ID_IPV4_DHCP               (5U)
 #define TREE_ID_HARDWARE_CPU_TEMP       (1U)
 #define TREE_ID_HARDWARE_CONFIG         (2U)
 #define TREE_ID_HARDWARE_ESTOP          (3U)
@@ -44,8 +46,8 @@ extern struct netif gnetif;
 #define TREE_ACCESS_READ_EXECUTE        (0xAAU)
 #define TREE_WRITE_EFFECT_REBOOT        "reboot_required"
 #define TREE_APP_ACTION_MAX             (8U)
-#define TREE_REBOOT_DELAY_MS            (250U)
 #define TREE_RAIL_MODE_ENUM_JSON        "\"Enabled\",\"Disabled\",\"Follow Estop\""
+#define TREE_NET_DHCP_ENUM_JSON         "\"Disabled\",\"Enabled\""
 
 typedef struct
 {
@@ -278,6 +280,67 @@ static bool parse_rail_mode_text(const uint8_t *text, uint16_t text_len, Residen
   return false;
 }
 
+static bool parse_net_dhcp_text(const uint8_t *text, uint16_t text_len, uint8_t *enabled_out)
+{
+  uint16_t start;
+  uint16_t end;
+  const uint8_t *trimmed;
+
+  if (enabled_out == 0)
+  {
+    return false;
+  }
+
+  if ((text == 0) || (text_len == 0U))
+  {
+    return false;
+  }
+
+  start = 0U;
+  while ((start < text_len) && ((text[start] == (uint8_t)' ') || (text[start] == (uint8_t)'\t')))
+  {
+    start++;
+  }
+  end = text_len;
+  while ((end > start) && ((text[end - 1U] == (uint8_t)' ') || (text[end - 1U] == (uint8_t)'\t')))
+  {
+    end--;
+  }
+
+  trimmed = text + start;
+  text_len = (uint16_t)(end - start);
+  if (text_len == 0U)
+  {
+    return false;
+  }
+
+  if (text_equals(trimmed, text_len, "Enabled"))
+  {
+    *enabled_out = 1U;
+    return true;
+  }
+
+  if (text_equals(trimmed, text_len, "Disabled"))
+  {
+    *enabled_out = 0U;
+    return true;
+  }
+
+  if ((text_len == 1U) && (trimmed[0] == (uint8_t)'1'))
+  {
+    *enabled_out = 1U;
+    return true;
+  }
+
+  if ((text_len == 1U) && (trimmed[0] == (uint8_t)'0'))
+  {
+    *enabled_out = 0U;
+    return true;
+  }
+
+  return false;
+}
+
 static int append_u16(uint8_t *response, uint16_t response_max, uint16_t *offset, uint16_t value)
 {
   if ((*offset + sizeof(value)) > response_max)
@@ -493,6 +556,11 @@ static bool location_is_ipv4_leaf(const uint8_t *location, uint8_t depth)
           (location[1] == TREE_ID_IPV4_GATEWAY));
 }
 
+static bool location_is_ipv4_dhcp(const uint8_t *location, uint8_t depth)
+{
+  return (depth == 2U) && (location[0] == TREE_ID_NETWORK) && (location[1] == TREE_ID_IPV4_DHCP);
+}
+
 static bool location_is_mac(const uint8_t *location, uint8_t depth)
 {
   return (depth == 2U) && (location[0] == TREE_ID_NETWORK) && (location[1] == TREE_ID_NETWORK_MAC);
@@ -586,7 +654,8 @@ static void reboot_task(void *argument)
   {
     if (g_reboot_requested)
     {
-      osDelay(TREE_REBOOT_DELAY_MS);
+      g_reboot_requested = false;
+      resident_network_prepare_for_reset();
       HAL_NVIC_SystemReset();
     }
 
@@ -696,6 +765,7 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
   char rail_b_mode_text[16];
   char rail_a_output_text[16];
   char rail_b_output_text[16];
+  char dhcp_text[12];
   char flash_current_slot_text[12];
   char flash_bytes_used_text[24];
   char flash_bytes_remaining_text[24];
@@ -707,7 +777,16 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
     return PROTO_RESULT_PARSE;
   }
 
-  boot_metadata_get_ipv4(ip, subnet, gateway);
+  if (boot_metadata_get_net_dhcp_enabled() != 0U)
+  {
+    (void)resident_network_get_ipv4(ip, subnet, gateway);
+  }
+  else
+  {
+    boot_metadata_get_ipv4(ip, subnet, gateway);
+  }
+  (void)snprintf(dhcp_text, sizeof(dhcp_text), "%s",
+                 (boot_metadata_get_net_dhcp_enabled() != 0U) ? "Enabled" : "Disabled");
   format_mac(mac_text, sizeof(mac_text));
   format_ipv4(ip, ip_text, sizeof(ip_text));
   format_ipv4(subnet, subnet_text, sizeof(subnet_text));
@@ -738,14 +817,31 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
   }
   else if (location_is_network(location, depth))
   {
+    const uint8_t dhcp_on = boot_metadata_get_net_dhcp_enabled();
     items[count++] = (ResidentTreeListItem){TREE_ID_NETWORK_MAC, 0U, TREE_ACCESS_READ_WRITE,
                                             "MAC", mac_text, TREE_WRITE_EFFECT_REBOOT};
-    items[count++] = (ResidentTreeListItem){TREE_ID_IPV4_ADDRESS, 0U, TREE_ACCESS_READ_WRITE,
-                                            "Address", ip_text, TREE_WRITE_EFFECT_REBOOT};
-    items[count++] = (ResidentTreeListItem){TREE_ID_IPV4_SUBNET, 0U, TREE_ACCESS_READ_WRITE,
-                                            "Subnet", subnet_text, TREE_WRITE_EFFECT_REBOOT};
-    items[count++] = (ResidentTreeListItem){TREE_ID_IPV4_GATEWAY, 0U, TREE_ACCESS_READ_WRITE,
-                                            "Gateway", gateway_text, TREE_WRITE_EFFECT_REBOOT};
+    items[count++] = (ResidentTreeListItem){TREE_ID_IPV4_DHCP, 0U, TREE_ACCESS_READ_WRITE,
+                                            "DHCP", dhcp_text, TREE_WRITE_EFFECT_REBOOT,
+                                            "DHCP preference (applied after reboot)",
+                                            false, 0, TREE_NET_DHCP_ENUM_JSON};
+    items[count++] =
+        (ResidentTreeListItem){TREE_ID_IPV4_ADDRESS, 0U,
+                               (dhcp_on != 0U) ? TREE_ACCESS_READ : TREE_ACCESS_READ_WRITE,
+                               "Address", ip_text,
+                               (dhcp_on != 0U) ? (const char *)0 : TREE_WRITE_EFFECT_REBOOT,
+                               (dhcp_on != 0U) ? "Runtime IPv4 address (DHCP)" : (const char *)0};
+    items[count++] =
+        (ResidentTreeListItem){TREE_ID_IPV4_SUBNET, 0U,
+                               (dhcp_on != 0U) ? TREE_ACCESS_READ : TREE_ACCESS_READ_WRITE,
+                               "Subnet", subnet_text,
+                               (dhcp_on != 0U) ? (const char *)0 : TREE_WRITE_EFFECT_REBOOT,
+                               (dhcp_on != 0U) ? "Runtime subnet mask (DHCP)" : (const char *)0};
+    items[count++] =
+        (ResidentTreeListItem){TREE_ID_IPV4_GATEWAY, 0U,
+                               (dhcp_on != 0U) ? TREE_ACCESS_READ : TREE_ACCESS_READ_WRITE,
+                               "Gateway", gateway_text,
+                               (dhcp_on != 0U) ? (const char *)0 : TREE_WRITE_EFFECT_REBOOT,
+                               (dhcp_on != 0U) ? "Runtime default gateway (DHCP)" : (const char *)0};
   }
   else if (location_is_hardware(location, depth))
   {
@@ -864,8 +960,6 @@ int resident_device_tree_get(const uint8_t *location, uint8_t depth,
     return PROTO_RESULT_PARSE;
   }
 
-  boot_metadata_get_ipv4(ip, subnet, gateway);
-
   if (location_is_mac(location, depth))
   {
     format_mac(value, sizeof(value));
@@ -894,8 +988,21 @@ int resident_device_tree_get(const uint8_t *location, uint8_t depth,
   {
     (void)resident_hardware_get_rail_output_text(rail_id_for_location(location), value, sizeof(value));
   }
+  else if (location_is_ipv4_dhcp(location, depth))
+  {
+    (void)snprintf(value, sizeof(value), "%s",
+                   (boot_metadata_get_net_dhcp_enabled() != 0U) ? "Enabled" : "Disabled");
+  }
   else if (location_is_ipv4_leaf(location, depth))
   {
+    if (boot_metadata_get_net_dhcp_enabled() != 0U)
+    {
+      (void)resident_network_get_ipv4(ip, subnet, gateway);
+    }
+    else
+    {
+      boot_metadata_get_ipv4(ip, subnet, gateway);
+    }
     const uint8_t *selected = ip;
     if (location[1] == TREE_ID_IPV4_SUBNET)
     {
@@ -966,6 +1073,7 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
   uint8_t parsed_mac[6];
   uint32_t parsed_u32;
   ResidentHardwareRailMode parsed_mode;
+  uint8_t parsed_dhcp_enabled;
 
   if ((location == 0) || (value == 0) || (response == 0) || (response_len == 0))
   {
@@ -985,6 +1093,39 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
     }
 
     memcpy(gnetif.hwaddr, parsed_mac, sizeof(parsed_mac));
+    if (response_max < 1U)
+    {
+      return PROTO_RESULT_GENERIC;
+    }
+    response[0] = 1U;
+    *response_len = 1U;
+    return PROTO_RESULT_OK;
+  }
+
+  if (location_is_ipv4_dhcp(location, depth))
+  {
+    if (!parse_net_dhcp_text(value, value_len, &parsed_dhcp_enabled))
+    {
+      return PROTO_RESULT_INVALID_VALUE;
+    }
+
+    const uint8_t cur = boot_metadata_get_net_dhcp_enabled();
+    if (cur == parsed_dhcp_enabled)
+    {
+      if (response_max < 1U)
+      {
+        return PROTO_RESULT_GENERIC;
+      }
+      response[0] = 0U;
+      *response_len = 1U;
+      return PROTO_RESULT_OK;
+    }
+
+    if (boot_metadata_set_net_dhcp_enabled(parsed_dhcp_enabled) != 0)
+    {
+      return PROTO_RESULT_GENERIC;
+    }
+
     if (response_max < 1U)
     {
       return PROTO_RESULT_GENERIC;
@@ -1053,7 +1194,17 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
     return PROTO_RESULT_NOT_FOUND;
   }
 
+  if (boot_metadata_get_net_dhcp_enabled() != 0U)
+  {
+    return PROTO_RESULT_INVALID_VALUE;
+  }
+
   if (!parse_ipv4_text(value, value_len, parsed_ip))
+  {
+    return PROTO_RESULT_INVALID_VALUE;
+  }
+
+  if (boot_metadata_ipv4_is_unusable_reserved(parsed_ip))
   {
     return PROTO_RESULT_INVALID_VALUE;
   }
@@ -1128,6 +1279,7 @@ int resident_device_tree_execute(const uint8_t *location, uint8_t depth,
   }
 
   if (location_is_mac(location, depth) || location_is_ipv4_leaf(location, depth) ||
+      location_is_ipv4_dhcp(location, depth) ||
       location_is_cpu_temp(location, depth) || location_is_hardware_poll_period(location, depth) ||
       location_is_estop(location, depth) || location_is_button(location, depth) ||
       location_is_rail_mode(location, depth) || location_is_rail_output(location, depth) ||

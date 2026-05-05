@@ -31,7 +31,8 @@ typedef struct
   uint32_t hardware_poll_period_ms;
   uint8_t rail_a_mode;
   uint8_t rail_b_mode;
-  uint8_t reserved_rails[2];
+  uint8_t net_dhcp_enabled;
+  uint8_t reserved_pad;
   uint32_t crc32;
 } BootKvRam;
 
@@ -96,6 +97,7 @@ static const BootCanonEntry k_boot_canon[] = {
     { BOOT_KV_HW_POLL_MS,    1U, 0U, (uint16_t)offsetof(BootKvRam, hardware_poll_period_ms), 0U},
     { BOOT_KV_RAIL_A,        1U, 1U, (uint16_t)offsetof(BootKvRam, rail_a_mode), 1U},
     { BOOT_KV_RAIL_B,        1U, 1U, (uint16_t)offsetof(BootKvRam, rail_b_mode), 1U},
+    { BOOT_KV_NET_DHCP,      0U, 1U, (uint16_t)offsetof(BootKvRam, net_dhcp_enabled), 1U},
 };
 #define BOOT_CANON_COUNT ((uint32_t)(sizeof(k_boot_canon) / sizeof(k_boot_canon[0])))
 
@@ -499,17 +501,17 @@ static void metadata_defaults_ram(void)
   g_kv_ram.net_ipv4_gateway[1] = RESIDENT_IPV4_GW1;
   g_kv_ram.net_ipv4_gateway[2] = RESIDENT_IPV4_GW2;
   g_kv_ram.net_ipv4_gateway[3] = RESIDENT_IPV4_GW3;
-  g_kv_ram.net_mac[0] = 0x00U;
-  g_kv_ram.net_mac[1] = 0x80U;
-  g_kv_ram.net_mac[2] = 0xE1U;
-  g_kv_ram.net_mac[3] = 0x00U;
+  g_kv_ram.net_mac[0] = 0x30U;
+  g_kv_ram.net_mac[1] = 0x3DU;
+  g_kv_ram.net_mac[2] = 0x51U;
+  g_kv_ram.net_mac[3] = 0xBAU;
   g_kv_ram.net_mac[4] = 0x00U;
   g_kv_ram.net_mac[5] = 0x00U;
   g_kv_ram.hardware_poll_period_ms = BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS;
   g_kv_ram.rail_a_mode = BOOT_METADATA_DEFAULT_RAIL_MODE;
   g_kv_ram.rail_b_mode = BOOT_METADATA_DEFAULT_RAIL_MODE;
-  g_kv_ram.reserved_rails[0] = 0U;
-  g_kv_ram.reserved_rails[1] = 0U;
+  g_kv_ram.net_dhcp_enabled = 1U;
+  g_kv_ram.reserved_pad = 0U;
   g_kv_ram.crc32 = 0U;
 }
 
@@ -521,6 +523,11 @@ static int apply_generic_tlv(uint32_t node_id, const uint8_t *val, uint16_t vlen
   if (e != NULL)
   {
     if ((vlen != e->tlv_len) || (vlen == 0U))
+    {
+      return 0;
+    }
+
+    if ((node_id == BOOT_KV_NET_DHCP) && (val[0] > 1U))
     {
       return 0;
     }
@@ -1191,6 +1198,9 @@ static void stored_kv_fmt_name(uint32_t node_id, char *name_out, size_t name_cap
   case BOOT_KV_RAIL_B:
     (void)snprintf(name_out, name_cap, "rail_b");
     break;
+  case BOOT_KV_NET_DHCP:
+    (void)snprintf(name_out, name_cap, "dhcp");
+    break;
   default:
     if ((node_id & ~BOOT_KV_APP_STORAGE_MASK) == BOOT_KV_APP_STORAGE_BASE)
     {
@@ -1283,6 +1293,22 @@ static void stored_kv_fmt_value(uint32_t node_id, char *value_out, size_t value_
     if (boot_metadata_kv_read_u32(node_id, &v) == 0)
     {
       (void)snprintf(value_out, value_cap, "%lu", (unsigned long)v);
+    }
+
+    return;
+  }
+
+  if (node_id == BOOT_KV_NET_DHCP)
+  {
+    uint8_t d = 1U;
+    uint16_t dn = 0U;
+
+    if (boot_metadata_kv_read_bytes(BOOT_KV_NET_DHCP, &d, 1U, &dn) == 0)
+    {
+      if (dn == 1U)
+      {
+        (void)snprintf(value_out, value_cap, "%u", (unsigned int)d);
+      }
     }
 
     return;
@@ -1402,7 +1428,14 @@ int boot_metadata_kv_write_bytes_commit(uint32_t node_id, const uint8_t *data, u
       return -2;
     }
 
-    if ((e_tlv->tlv_len == 1U) && (data[0] > 2U))
+    if (node_id == BOOT_KV_NET_DHCP)
+    {
+      if ((len != 1U) || (data[0] > 1U))
+      {
+        return -2;
+      }
+    }
+    else if ((e_tlv->tlv_len == 1U) && (data[0] > 2U))
     {
       return -2;
     }
@@ -1481,6 +1514,36 @@ int boot_metadata_enable_app(void)
   g_kv_ram.app_valid = 1U;
 
   return metadata_physical_commit_incremented();
+}
+
+bool boot_metadata_ipv4_is_unusable_reserved(const uint8_t addr[4])
+{
+  static const uint8_t k_all_zero[4] = {0U, 0U, 0U, 0U};
+  static const uint8_t k_all_one[4] = {255U, 255U, 255U, 255U};
+
+  if (addr == NULL)
+  {
+    return true;
+  }
+
+  return (memcmp(addr, k_all_zero, 4U) == 0) || (memcmp(addr, k_all_one, 4U) == 0);
+}
+
+uint8_t boot_metadata_get_net_dhcp_enabled(void)
+{
+  return (g_kv_ram.net_dhcp_enabled != 0U) ? 1U : 0U;
+}
+
+int boot_metadata_set_net_dhcp_enabled(uint8_t enabled)
+{
+  uint8_t v = (enabled != 0U) ? 1U : 0U;
+
+  if (g_kv_ram.net_dhcp_enabled == v)
+  {
+    return 0;
+  }
+
+  return boot_metadata_kv_write_bytes_commit(BOOT_KV_NET_DHCP, &v, 1U);
 }
 
 void boot_metadata_get_ipv4(uint8_t ip[4], uint8_t subnet[4], uint8_t gateway[4])

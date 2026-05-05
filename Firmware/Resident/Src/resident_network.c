@@ -1,7 +1,9 @@
 #include "resident_network.h"
 
+#include "cmsis_os.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
+#include "lwip/tcpip.h"
 #include "lwip/udp.h"
 
 #include <string.h>
@@ -16,6 +18,18 @@ typedef struct
 } ResidentUdpSocket;
 
 static ResidentUdpSocket g_udp_sockets[4];
+
+static osSemaphoreId_t s_prep_for_reset_sem;
+static StaticSemaphore_t s_prep_for_reset_sem_cb;
+
+static void reboot_prep_tcpip_cb(void *ctx)
+{
+  (void)ctx;
+  if (s_prep_for_reset_sem != NULL)
+  {
+    (void)osSemaphoreRelease(s_prep_for_reset_sem);
+  }
+}
 
 static void app_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
                          const ip_addr_t *addr, u16_t port)
@@ -39,6 +53,16 @@ static void app_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 void resident_network_init(void)
 {
   memset(g_udp_sockets, 0, sizeof(g_udp_sockets));
+
+  static const osSemaphoreAttr_t prep_attr = {
+    .name = "NetRebootPrep",
+    .cb_mem = &s_prep_for_reset_sem_cb,
+    .cb_size = sizeof(s_prep_for_reset_sem_cb),
+  };
+  if (s_prep_for_reset_sem == NULL)
+  {
+    s_prep_for_reset_sem = osSemaphoreNew(1U, 0U, &prep_attr);
+  }
 }
 
 int resident_network_udp_open(uint16_t local_port, AppUdpReceiveCallback callback,
@@ -145,4 +169,20 @@ int resident_network_get_mac(uint8_t mac[6])
 bool resident_network_link_is_up(void)
 {
   return netif_is_link_up(&gnetif);
+}
+
+void resident_network_prepare_for_reset(void)
+{
+  /*
+   * ethernetif low_level_output() blocks until HAL_ETH TX-complete, so the reboot EXECUTE
+   * reply is already on the wire before the udp/ip path returns. Queue a noop callback so we
+   * run once more on the tcpip thread after any prior mailbox work (timers, stray packets).
+   */
+  if ((s_prep_for_reset_sem == NULL) || (tcpip_callback(reboot_prep_tcpip_cb, NULL) != ERR_OK))
+  {
+    (void)osDelay(10U);
+    return;
+  }
+
+  (void)osSemaphoreAcquire(s_prep_for_reset_sem, osWaitForever);
 }

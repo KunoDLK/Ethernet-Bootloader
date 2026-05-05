@@ -12,5 +12,7 @@ void resident_network_udp_close(AppUdpHandle handle);
 int resident_network_get_ipv4(uint8_t ip[4], uint8_t netmask[4], uint8_t gateway[4]);
 int resident_network_get_mac(uint8_t mac[6]);
 bool resident_network_link_is_up(void);
+/** Wait until lwIP tcpip thread drains ahead of NVIC reset (UDP replies already wait for ETH DMA TX). */
+void resident_network_prepare_for_reset(void);
 
 #endif /* RESIDENT_NETWORK_H */

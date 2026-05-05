@@ -37,6 +37,9 @@
 /* Within 'USER CODE' section, code will be kept by default at each generation */
 /* USER CODE BEGIN 0 */
 #include "boot_metadata.h"
+#if LWIP_DHCP
+#include "lwip/dhcp.h"
+#endif
 
 /* USER CODE END 0 */
 
@@ -210,10 +213,10 @@ static void low_level_init(struct netif *netif)
 
   static uint8_t MACAddr[6];
   heth.Instance = ETH;
-  MACAddr[0] = 0x00;
-  MACAddr[1] = 0x80;
-  MACAddr[2] = 0xE1;
-  MACAddr[3] = 0x00;
+  MACAddr[0] = 0x30;
+  MACAddr[1] = 0x3D;
+  MACAddr[2] = 0x51;
+  MACAddr[3] = 0xBA;
   MACAddr[4] = 0x00;
   MACAddr[5] = 0x00;
   heth.Init.MACAddr = &MACAddr[0];
@@ -780,6 +783,9 @@ void ethernet_link_thread(void* argument)
     HAL_ETH_Stop_IT(&heth);
     netif_set_down(netif);
     netif_set_link_down(netif);
+#if LWIP_DHCP
+    dhcp_network_changed(netif);
+#endif
   }
   else if(!netif_is_link_up(netif) && (PHYLinkState > LAN8742_STATUS_LINK_DOWN))
   {
@@ -819,6 +825,9 @@ void ethernet_link_thread(void* argument)
       HAL_ETH_Start_IT(&heth);
       netif_set_up(netif);
       netif_set_link_up(netif);
+#if LWIP_DHCP
+      dhcp_network_changed(netif);
+#endif
     }
   }
 
