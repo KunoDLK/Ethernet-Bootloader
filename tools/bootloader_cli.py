@@ -8,6 +8,7 @@ import argparse
 import ctypes
 import errno
 import ipaddress
+import re
 import json
 import os
 import random
@@ -318,14 +319,76 @@ def format_mac(mac: bytes) -> str:
     return ":".join(f"{byte:02x}" for byte in mac)
 
 
+# ANSI CSI sequences (SGR and cursor modes we emit / tolerate in pane lines).
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[\d;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
+def visible_len(text: str) -> int:
+    return len(strip_ansi(text))
+
+
+SGR_RESET = "\033[0m"
+SGR_DATA_GREEN = "\033[38;2;51;255;0m"  # #33ff00
+SGR_CYAN = "\033[38;2;0;255;255m"  # bright cyan (#00ffff); ANSI 36 is often dark on some palettes
+# 256-color amber/orange (falls back visually to yellow on limited palettes).
+SGR_AMBER = "\033[38;5;214m"
+
+
+def style_data(text: str) -> str:
+    """Light green (#33ff00) for protocol/host/read values ("data")."""
+    if text == "":
+        return text
+    return f"{SGR_DATA_GREEN}{text}{SGR_RESET}"
+
+
+def style_input(text: str) -> str:
+    """Cyan for user-editable draft values."""
+    if text == "":
+        return text
+    return f"{SGR_CYAN}{text}{SGR_RESET}"
+
+
+def style_amber(text: str) -> str:
+    """Amber foreground for reboot-required attention."""
+    if text == "":
+        return text
+    return f"{SGR_AMBER}{text}{SGR_RESET}"
+
+
 def truncate(text: str, width: int) -> str:
+    """Pad or truncate to exactly ``width`` visible columns; keep embedded ANSI sequences."""
     if width <= 0:
         return ""
-    if len(text) <= width:
-        return text.ljust(width)
+    vl = visible_len(text)
+    if vl <= width:
+        return text + (" " * (width - vl))
     if width == 1:
-        return text[:1]
-    return text[: width - 1] + "~"
+        return "~"
+
+    out: list[str] = []
+    vis = 0
+    i = 0
+    limit = width - 1
+    while i < len(text):
+        if text[i] == "\x1b" and i + 1 < len(text) and text[i + 1] == "[":
+            m = _ANSI_ESCAPE_RE.match(text, i)
+            if m:
+                out.append(m.group(0))
+                i = m.end()
+                continue
+        if vis >= limit:
+            break
+        out.append(text[i])
+        vis += 1
+        i += 1
+
+    truncated = "".join(out) + "~" + SGR_RESET
+    pad = width - visible_len(truncated)
+    return truncated + (" " * max(0, pad))
 
 
 def format_age(seconds: float) -> str:
@@ -419,11 +482,29 @@ def ip_in_subnet(ip: str, network_ip: str, subnet: str) -> bool:
     return address in network
 
 
+def device_ipv4_duplicated_among_known(device: Device, known_devices: list[Device]) -> bool:
+    """True if two or more discovered devices report the same configured IPv4."""
+    return sum(1 for d in known_devices if d.ip == device.ip) > 1
+
+
 def device_control_target(
     device: Device,
+    bind_ip: str,
     selected_interface: NetworkInterface | None,
     fallback_target: str,
+    known_devices: list[Device],
+    *,
+    broadcast_when_adapter_ip_matches_device: bool,
 ) -> str:
+    """Pick UDP destination for BCAST_UID-wrapped control packets.
+
+    When unicast to ``device.ip`` is ambiguous—local bind equals that IP, or multiple
+    discovered devices share it—optional broadcast uses ``fallback_target`` (e.g.
+    255.255.255.255) while still selecting the peer via UID in the packet body.
+    """
+    ambiguous_unicast = bind_ip == device.ip or device_ipv4_duplicated_among_known(device, known_devices)
+    if broadcast_when_adapter_ip_matches_device and ambiguous_unicast:
+        return fallback_target
     if selected_interface is not None and ip_in_subnet(device.ip, selected_interface.ip, selected_interface.subnet):
         return device.ip
     return fallback_target
@@ -789,7 +870,7 @@ class Terminal:
         sys.stdout.flush()
 
     def render(self, text: str) -> None:
-        sys.stdout.write("\x1b[H" + text)
+        sys.stdout.write("\x1b[H\x1b[0m" + text)
         sys.stdout.flush()
 
 
@@ -883,6 +964,7 @@ def build_screen(
     target: str,
     port: int,
     error: str,
+    broadcast_when_adapter_ip_matches_device: bool,
 ) -> str:
     size = shutil.get_terminal_size((100, 30))
     cols = max(size.columns, 60)
@@ -919,8 +1001,12 @@ def build_screen(
             error,
             now,
             right_w,
+            broadcast_when_adapter_ip_matches_device,
         )
-        bindings = " Up/Down: select device   Enter: open device   R: refresh discovery   Q: quit"
+        bindings = (
+            " Up/Down: select device   Enter: open device   Space: ambiguous-IP broadcast"
+            "   R: refresh discovery   Q: quit"
+        )
     else:
         device = devices[selected_device_index] if devices else None
         if mode in ("raw_tree", "edit_leaf"):
@@ -975,7 +1061,7 @@ def build_screen(
     lines.append("-" * cols)
     lines.append(truncate(bindings, cols))
 
-    return "\n".join(line[:cols].ljust(cols) for line in lines[:rows])
+    return "\n".join(truncate(line, cols) for line in lines[:rows])
 
 
 def build_interface_left_pane(interfaces: list[NetworkInterface], selected_index: int) -> list[str]:
@@ -987,12 +1073,12 @@ def build_interface_left_pane(interfaces: list[NetworkInterface], selected_index
     selected_index = max(0, min(selected_index, len(interfaces) - 1))
     for index, interface in enumerate(interfaces):
         selected = ">" if index == selected_index else " "
-        lines.append(f"{selected} {interface.name}")
-        lines.append(f"  IP      {interface.ip}")
+        lines.append(f"{selected} {style_data(interface.name)}")
+        lines.append(f"  IP      {style_data(interface.ip)}")
         if interface.subnet:
-            lines.append(f"  Subnet  {interface.subnet}")
+            lines.append(f"  Subnet  {style_data(interface.subnet)}")
         if interface.gateway:
-            lines.append(f"  Gateway {interface.gateway}")
+            lines.append(f"  Gateway {style_data(interface.gateway)}")
         lines.append("")
 
     return lines
@@ -1018,10 +1104,10 @@ def build_interface_right_pane(
     interface = interfaces[selected_index]
     lines.extend(
         [
-            f" Name             : {interface.name}",
-            f" IP               : {interface.ip}",
-            f" Subnet mask      : {interface.subnet or 'unknown'}",
-            f" Gateway          : {interface.gateway or 'unknown'}",
+            f" Name             : {style_data(interface.name)}",
+            f" IP               : {style_data(interface.ip)}",
+            f" Subnet mask      : {style_data(interface.subnet or 'unknown')}",
+            f" Gateway          : {style_data(interface.gateway or 'unknown')}",
             "",
             " Press Enter to use this adapter for",
             " discovery and control traffic.",
@@ -1041,7 +1127,7 @@ def build_interface_right_pane(
 def build_discovery_left_pane(devices: list[Device], selected_index: int, now: float, width: int) -> list[str]:
     lines = [
         " Discovered devices",
-        f" {len(devices)} device(s)",
+        f" {style_data(str(len(devices)))} device(s)",
         "",
     ]
 
@@ -1058,9 +1144,10 @@ def build_discovery_left_pane(devices: list[Device], selected_index: int, now: f
     for index, device in enumerate(devices):
         selected = ">" if index == selected_index else " "
         age = format_age(now - device.last_seen)
-        lines.append(f"{selected} {device.ip:<15} {format_mac(device.mac)}")
-        lines.append(f"  UID {device.uid.hex()[:24]}")
-        lines.append(f"  last seen {age} ago")
+        ip_col = device.ip.ljust(15)
+        lines.append(f"{selected} {style_data(ip_col)} {style_data(format_mac(device.mac))}")
+        lines.append(f"  UID {style_data(device.uid.hex()[:24])}")
+        lines.append(f"  last seen {style_data(age)} ago")
         lines.append("")
 
     return lines
@@ -1076,19 +1163,24 @@ def build_discovery_right_pane(
     error: str,
     now: float,
     width: int,
+    broadcast_when_adapter_ip_matches_device: bool,
 ) -> list[str]:
+    checkbox = "[x]" if broadcast_when_adapter_ip_matches_device else "[ ]"
     lines = [
         " Device information",
         "",
-        f" Discovery target : {target}:{port}",
-        f" Local bind IP    : {bind_ip}",
-        f" Local subnet     : {selected_interface.subnet if selected_interface else 'unknown'}",
-        f" Local gateway    : {selected_interface.gateway if selected_interface else 'unknown'}",
+        f" Discovery target : {style_data(f'{target}:{port}')}",
+        f" Local bind IP    : {style_data(bind_ip)}",
+        f" Local subnet     : {style_data(selected_interface.subnet if selected_interface else 'unknown')}",
+        f" Local gateway    : {style_data(selected_interface.gateway if selected_interface else 'unknown')}",
+        "",
+        f" {checkbox} Broadcast if IP ambiguous (host match / duplicate device IP)",
+        "     (UID still selects device)",
         "",
     ]
 
     if error:
-        lines.extend([" Discovery error:", f" {error}", ""])
+        lines.extend([" Discovery error:", f" {style_data(error)}", ""])
 
     if not devices:
         lines.extend(
@@ -1105,18 +1197,18 @@ def build_discovery_right_pane(
     device = devices[selected_index]
     lines.extend(
         [
-            f" Source           : {device.source[0]}:{device.source[1]}",
-            f" IP               : {device.ip}",
-            f" Subnet           : {device.subnet}",
-            f" Gateway          : {device.gateway}",
-            f" MAC              : {format_mac(device.mac)}",
-            f" UID              : {device.uid.hex()}",
-            f" Capabilities     : 0x{device.capabilities:08x}",
-            f" Resident version : 0x{device.resident_version:08x}",
-            f" App version      : 0x{device.app_version:08x}",
-            f" Last tx id       : 0x{device.transaction_id:08x}",
-            f" First seen       : {format_age(now - device.first_seen)} ago",
-            f" Last seen        : {format_age(now - device.last_seen)} ago",
+            f" Source           : {style_data(f'{device.source[0]}:{device.source[1]}')}",
+            f" IP               : {style_data(device.ip)}",
+            f" Subnet           : {style_data(device.subnet)}",
+            f" Gateway          : {style_data(device.gateway)}",
+            f" MAC              : {style_data(format_mac(device.mac))}",
+            f" UID              : {style_data(device.uid.hex())}",
+            f" Capabilities     : {style_data(f'0x{device.capabilities:08x}')}",
+            f" Resident version : {style_data(f'0x{device.resident_version:08x}')}",
+            f" App version      : {style_data(f'0x{device.app_version:08x}')}",
+            f" Last tx id       : {style_data(f'0x{device.transaction_id:08x}')}",
+            f" First seen       : {style_data(format_age(now - device.first_seen))} ago",
+            f" Last seen        : {style_data(format_age(now - device.last_seen))} ago",
             "",
             " Press Enter to manage this device.",
         ]
@@ -1133,9 +1225,9 @@ def build_left_header(title: str, reboot_required_count: int, width: int) -> str
     if reboot_required_count <= 0:
         return f" {title}"
 
-    label = f"Nodes Requiring Re-Boot : {reboot_required_count}"
-    available = max(0, width - len(label) - 1)
-    return f" {title}"[:available].ljust(available) + label
+    label = style_amber(f"Nodes Requiring Re-Boot : {reboot_required_count}")
+    budget = max(0, width - visible_len(label))
+    return truncate(f" {title}", budget) + label
 
 
 def build_device_menu_left_pane(
@@ -1151,8 +1243,8 @@ def build_device_menu_left_pane(
 
     lines.extend(
         [
-            f" {device.ip}",
-            f" {format_mac(device.mac)}",
+            f" {style_data(device.ip)}",
+            f" {style_data(format_mac(device.mac))}",
             "",
         ]
     )
@@ -1178,7 +1270,7 @@ def build_tree_left_pane(
         return lines
 
     path = "/" + "/".join(tree_path_names)
-    lines.extend([f" {device.ip}", f" {truncate(path, 28).strip()}", ""])
+    lines.extend([f" {style_data(device.ip)}", f" {truncate(style_data(path), 28)}", ""])
 
     if not tree_items:
         lines.append(" No child nodes.")
@@ -1189,7 +1281,7 @@ def build_tree_left_pane(
         if item.has_children:
             lines.append(f"{selected} {item.name}/")
         elif item.value:
-            lines.append(f"{selected} {item.name} : {item.value}")
+            lines.append(f"{selected} {item.name} : {style_data(item.value)}")
         else:
             lines.append(f"{selected} {item.name}")
 
@@ -1221,13 +1313,13 @@ def build_device_menu_right_pane(
     lines = [
         f" {selected_item}",
         "",
-        f" Device IP        : {device.ip}",
-        f" Last seen        : {format_age(now - device.last_seen)} ago",
+        f" Device IP        : {style_data(device.ip)}",
+        f" Last seen        : {style_data(format_age(now - device.last_seen))} ago",
         "",
     ]
 
     if status_message:
-        lines.extend([f" Status           : {status_message}", ""])
+        lines.extend([f" Status           : {style_data(status_message)}", ""])
 
     if mode == "edit_leaf":
         path = "/".join(edit_path_names)
@@ -1235,17 +1327,17 @@ def build_device_menu_right_pane(
             [
                 " Set raw tree leaf.",
                 "",
-                f" Path             : {path}",
-                f" Node location    : {'.'.join(str(part) for part in edit_path)}",
+                f" Path             : {style_data(path)}",
+                f" Node location    : {style_data('.'.join(str(part) for part in edit_path))}",
                 "",
-                f" Old Value        : {edit_old_value}",
+                f" Old Value        : {style_data(edit_old_value)}",
             ]
         )
         if edit_enum_values:
             selected_index = max(0, min(edit_enum_index, len(edit_enum_values) - 1))
             lines.extend(
                 [
-                    f" New Value        : < [{edit_enum_values[selected_index]}] >",
+                    f" New Value        : < [{style_input(edit_enum_values[selected_index])}] >",
                     "",
                     " Use Left/Right to choose an option.",
                     " Press Enter to write the selected value.",
@@ -1255,7 +1347,7 @@ def build_device_menu_right_pane(
         else:
             lines.extend(
                 [
-                    f" New Value        : {edit_new_value}",
+                    f" New Value        : {style_input(edit_new_value)}",
                     "",
                     " Press Enter to write the new value.",
                     " Press Esc/B to cancel.",
@@ -1269,7 +1361,7 @@ def build_device_menu_right_pane(
             [
                 " Raw device tree navigation.",
                 "",
-                f" Path             : {path}",
+                f" Path             : {style_data(path)}",
                 "",
             ]
         )
@@ -1277,22 +1369,22 @@ def build_device_menu_right_pane(
             item = tree_items[max(0, min(tree_selected_index, len(tree_items) - 1))]
             lines.extend(
                 [
-                    f" Selected         : {item.name}",
-                    f" Node ID          : {item.node_id}",
-                    f" Access           : {format_access(item.access, item.write_effect)}",
-                    f" Type             : {'container' if item.has_children else 'leaf'}",
+                    f" Selected         : {style_data(item.name)}",
+                    f" Node ID          : {style_data(str(item.node_id))}",
+                    f" Access           : {style_data(format_access(item.access, item.write_effect))}",
+                    f" Type             : {style_data('container' if item.has_children else 'leaf')}",
                 ]
             )
             if item.value:
-                lines.append(f" Listed value     : {item.value}")
+                lines.append(f" Listed value     : {style_data(item.value)}")
             if item.description:
-                lines.append(f" Description      : {item.description}")
+                lines.append(f" Description      : {style_data(item.description)}")
             if item.unit:
-                lines.append(f" Unit             : {item.unit}")
+                lines.append(f" Unit             : {style_data(item.unit)}")
             if item.enum_values:
-                lines.append(f" Options          : {', '.join(item.enum_values)}")
+                lines.append(f" Options          : {style_data(', '.join(item.enum_values))}")
             if tree_value:
-                lines.append(f" Read value       : {tree_value}")
+                lines.append(f" Read value       : {style_data(tree_value)}")
             if not item.has_children and can_execute(item) and not can_write(item):
                 lines.append(" Enter executes this action.")
             elif not item.has_children and can_write(item):
@@ -1390,6 +1482,17 @@ def main() -> int:
     # IPv4 tree writes update flash only; lwIP uses new values after reboot. Keep discovery IP
     # until reboot succeeds, otherwise control packets (e.g. Reboot) still go to the old address.
     pending_network_patch_by_uid: dict[bytes, dict[str, str]] = {}
+    broadcast_when_adapter_ip_matches_device = True
+
+    def effective_control_target(device: Device, known_devices: list[Device]) -> str:
+        return device_control_target(
+            device,
+            args.bind_ip,
+            selected_interface,
+            args.target,
+            known_devices,
+            broadcast_when_adapter_ip_matches_device=broadcast_when_adapter_ip_matches_device,
+        )
 
     def mark_device_seen(uid: bytes) -> None:
         if worker is not None:
@@ -1412,15 +1515,16 @@ def main() -> int:
 
     def load_tree_node(
         device: Device,
+        known_devices: list[Device],
         update_status: bool = True,
         clear_read_value: bool = True,
         preserve_items_on_error: bool = False,
     ) -> None:
         nonlocal tree_items, tree_selected_index, tree_value, status_message
-        control_target = device_control_target(device, selected_interface, args.target)
+        ctrl_target = effective_control_target(device, known_devices)
         ok, items, message = list_device_tree_node(
             args.bind_ip,
-            control_target,
+            ctrl_target,
             device.uid,
             tree_location,
             on_response=lambda uid=device.uid: mark_device_seen(uid),
@@ -1464,6 +1568,7 @@ def main() -> int:
                 ):
                     load_tree_node(
                         selected_device,
+                        devices,
                         update_status=False,
                         clear_read_value=False,
                         preserve_items_on_error=(mode == "edit_leaf"),
@@ -1495,6 +1600,7 @@ def main() -> int:
                         target=args.target,
                         port=args.port,
                         error=error,
+                        broadcast_when_adapter_ip_matches_device=broadcast_when_adapter_ip_matches_device,
                     )
                 )
 
@@ -1523,6 +1629,11 @@ def main() -> int:
                     time.sleep(0.05)
                     continue
 
+                if mode == "discovery" and key == " ":
+                    broadcast_when_adapter_ip_matches_device = not broadcast_when_adapter_ip_matches_device
+                    time.sleep(0.05)
+                    continue
+
                 if mode == "edit_leaf":
                     if key in ("\x1b", "b"):
                         mode = "raw_tree"
@@ -1538,15 +1649,11 @@ def main() -> int:
                     elif not edit_enum_values and key == "backspace":
                         edit_new_value = edit_new_value[:-1]
                     elif key == "enter" and devices:
-                        control_target = device_control_target(
-                            devices[selected_device_index],
-                            selected_interface,
-                            args.target,
-                        )
+                        ctrl_target = effective_control_target(devices[selected_device_index], devices)
                         write_started = time.monotonic()
                         result, message, reboot_required = set_device_tree_value(
                             args.bind_ip,
-                            control_target,
+                            ctrl_target,
                             devices[selected_device_index].uid,
                             edit_path,
                             edit_new_value,
@@ -1618,7 +1725,7 @@ def main() -> int:
                         edit_new_value = ""
                         edit_enum_values = []
                         edit_enum_index = 0
-                        load_tree_node(devices[selected_device_index])
+                        load_tree_node(devices[selected_device_index], devices)
                         status_message = write_status
                     elif not edit_enum_values and key is not None and len(key) == 1 and key.isprintable():
                         if len(edit_new_value) < 64:
@@ -1631,7 +1738,7 @@ def main() -> int:
                         if tree_location and devices:
                             tree_location.pop()
                             tree_path_names.pop()
-                            load_tree_node(devices[selected_device_index])
+                            load_tree_node(devices[selected_device_index], devices)
                         else:
                             mode = "device_menu"
                     elif key == "up" and tree_items:
@@ -1646,17 +1753,13 @@ def main() -> int:
                             tree_location.append(item.node_id)
                             tree_path_names.append(item.name)
                             tree_selected_index = 0
-                            load_tree_node(devices[selected_device_index])
+                            load_tree_node(devices[selected_device_index], devices)
                         elif can_execute(item) and not can_write(item):
                             execute_path = tree_location + [item.node_id]
                             execute_started = time.monotonic()
                             ok, message = execute_device_tree_node(
                                 args.bind_ip,
-                                device_control_target(
-                                    devices[selected_device_index],
-                                    selected_interface,
-                                    args.target,
-                                ),
+                                effective_control_target(devices[selected_device_index], devices),
                                 devices[selected_device_index].uid,
                                 execute_path,
                                 on_response=lambda uid=devices[selected_device_index].uid: mark_device_seen(uid),
@@ -1675,11 +1778,7 @@ def main() -> int:
                         else:
                             ok, value, message = get_device_tree_value(
                                 args.bind_ip,
-                                device_control_target(
-                                    devices[selected_device_index],
-                                    selected_interface,
-                                    args.target,
-                                ),
+                                effective_control_target(devices[selected_device_index], devices),
                                 devices[selected_device_index].uid,
                                 tree_location + [item.node_id],
                                 on_response=lambda uid=devices[selected_device_index].uid: mark_device_seen(uid),
@@ -1708,7 +1807,7 @@ def main() -> int:
                                 tree_value = ""
                                 status_message = message
                     elif key == "r" and devices:
-                        load_tree_node(devices[selected_device_index])
+                        load_tree_node(devices[selected_device_index], devices)
                     time.sleep(0.05)
                     continue
 
@@ -1739,17 +1838,13 @@ def main() -> int:
                         tree_path_names = []
                         tree_selected_index = 0
                         tree_value = ""
-                        load_tree_node(devices[selected_device_index])
+                        load_tree_node(devices[selected_device_index], devices)
                         mode = "raw_tree"
                     elif DEVICE_MENU_ITEMS[selected_menu_index] == "Reboot Device":
                         execute_started = time.monotonic()
                         ok, message = execute_device_tree_node(
                             args.bind_ip,
-                            device_control_target(
-                                devices[selected_device_index],
-                                selected_interface,
-                                args.target,
-                            ),
+                            effective_control_target(devices[selected_device_index], devices),
                             devices[selected_device_index].uid,
                             STANDARD_REBOOT_PATH,
                             on_response=lambda uid=devices[selected_device_index].uid: mark_device_seen(uid),
