@@ -40,6 +40,20 @@ In `tools/bootloader_cli.py`:
   - True ambiguity cases (two devices share the same IP, or local bind equals device IP) *and only when the destination is on-link for that interface*.
 - Remove the current behavior where “off-subnet” implies “broadcast”.
 
+#### Firmware reply routing (required for cross-subnet control)
+Update firmware UDP response behavior so that replies reach the PC reliably even when the PC is on a different subnet.
+
+- **Preferred (most robust)**: reply “back the way it came”
+  - IP destination = incoming packet’s source IP
+  - UDP destination port = incoming packet’s source port
+  - Ethernet destination MAC = incoming Ethernet source MAC (often the router MAC when the sender is off-subnet)
+- **If firmware constructs L2 next-hop instead**:
+  - If destination IP is on-link (same subnet): ARP destination IP, unicast to that MAC
+  - Else (off-subnet): ARP default gateway IP, unicast to gateway MAC
+  - If gateway is unavailable / ARP fails: **fall back to broadcast as a last resort**
+
+This ensures:\n+- PC on Wi‑Fi can control a device on Ethernet across routed networks\n+- The CLI’s move to unicast control works consistently\n+- After MAC/IP changes, once the device becomes reachable again, replies return via the correct path
+
 #### MAC-change rediscovery workflow (key requirement)
 Because the device **UID remains stable** and MAC is updated via device-tree SET + reboot:
 - After writing MAC-related nodes, the CLI should:
