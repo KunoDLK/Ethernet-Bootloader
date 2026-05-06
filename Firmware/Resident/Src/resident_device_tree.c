@@ -90,9 +90,10 @@ static void format_ipv4(const uint8_t value[4], char *text, size_t text_size)
 
 static void format_mac(char *text, size_t text_size)
 {
+  uint8_t mac[6];
+  boot_metadata_get_mac(mac);
   (void)snprintf(text, text_size, "%02X:%02X:%02X:%02X:%02X:%02X",
-                 gnetif.hwaddr[0], gnetif.hwaddr[1], gnetif.hwaddr[2],
-                 gnetif.hwaddr[3], gnetif.hwaddr[4], gnetif.hwaddr[5]);
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
 static int hex_nibble(uint8_t ch)
@@ -1092,7 +1093,6 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
       return PROTO_RESULT_GENERIC;
     }
 
-    memcpy(gnetif.hwaddr, parsed_mac, sizeof(parsed_mac));
     if (response_max < 1U)
     {
       return PROTO_RESULT_GENERIC;

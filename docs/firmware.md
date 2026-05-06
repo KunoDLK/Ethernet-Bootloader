@@ -97,6 +97,9 @@ Define a fixed app image header at `APP_STORE_BASE = 0x08040000`. The resident v
 ## App Access Violation Policy
 Treat application access violations as recoverable resident-managed faults. The resident should contain the failure, persistently disable the app, then reboot into resident-only mode so discovery, device-tree access, and programming remain available.
 
+## Additional plans
+- [`docs/appapi_call_gateway.md`](appapi_call_gateway.md): AppApi call/return model (CCMRAM app + SRAM1 kernel, DMA-safe staging, callbacks).
+
 - Add [`Firmware/Boot/Inc/boot_fault.h`](c:/Users/kleeuwkent/Documents/Personal/Ethernet-Bootloader/Firmware/Boot/Inc/boot_fault.h) and [`Firmware/Boot/Src/boot_fault.c`](c:/Users/kleeuwkent/Documents/Personal/Ethernet-Bootloader/Firmware/Boot/Src/boot_fault.c) for fault classification and app-disable handling.
 - In `MemManage_Handler`, `BusFault_Handler`, `UsageFault_Handler`, and `HardFault_Handler`, detect whether the faulting PC/LR is inside the CCMRAM app execution range.
 - If the fault belongs to the application, write an `app_disabled` flag and fault reason into resident metadata/config, then request `NVIC_SystemReset()`.
