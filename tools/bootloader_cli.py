@@ -575,6 +575,7 @@ def send_device_tree_request(
             sock.bind((bind_ip, 0))
             sock.settimeout(0.05)
             started_at = time.monotonic()
+            rtt_started_at_ns = time.perf_counter_ns()
             sock.sendto(packet, (dst, CONTROL_PORT))
 
             deadline = started_at + wait_s
@@ -603,7 +604,7 @@ def send_device_tree_request(
                 if len(reply_payload) < 15 or reply_payload[:12] != uid:
                     continue
 
-                elapsed_s = max(time.monotonic() - started_at, 0.000001)
+                elapsed_s = max((time.perf_counter_ns() - rtt_started_at_ns) / 1_000_000_000, 0.000001)
                 if on_response is not None:
                     on_response(source[0], elapsed_s)
 
@@ -1722,7 +1723,7 @@ def main() -> int:
                         edit_new_value = edit_new_value[:-1]
                     elif key == "enter" and devices:
                         ctrl_target = effective_control_target(devices[selected_device_index], devices)
-                        write_started = time.monotonic()
+                        write_started_ns = time.perf_counter_ns()
                         result, message, reboot_required = set_device_tree_value(
                             args.bind_ip,
                             ctrl_target,
@@ -1735,7 +1736,7 @@ def main() -> int:
                                 uid, source_ip, elapsed_s
                             ),
                         )
-                        write_elapsed_ms = int((time.monotonic() - write_started) * 1000)
+                        write_elapsed_s = max((time.perf_counter_ns() - write_started_ns) / 1_000_000_000, 0.000001)
                         if result:
                             device_uid = devices[selected_device_index].uid
                             pending_nodes = reboot_required_nodes_by_uid.setdefault(device_uid, set())
@@ -1793,9 +1794,9 @@ def main() -> int:
                                         else:
                                             worker.patch_device_network(device_uid, gateway=written)
                         write_status = (
-                            f"wrote {edit_path_names[-1]}: {message} ({write_elapsed_ms} ms)"
+                            f"wrote {edit_path_names[-1]}: {message} ({format_rtt(write_elapsed_s)})"
                             if result
-                            else f"{message} ({write_elapsed_ms} ms)"
+                            else f"{message} ({format_rtt(write_elapsed_s)})"
                         )
                         mode = "raw_tree"
                         edit_new_value = ""
@@ -1812,9 +1813,13 @@ def main() -> int:
                 if mode == "raw_tree":
                     if key in ("\x1b", "b"):
                         if tree_location and devices:
-                            tree_location.pop()
+                            child_node_id = tree_location.pop()
                             tree_path_names.pop()
                             load_tree_node(devices[selected_device_index], devices)
+                            for index, item in enumerate(tree_items):
+                                if item.node_id == child_node_id:
+                                    tree_selected_index = index
+                                    break
                         else:
                             mode = "device_menu"
                     elif key == "up" and tree_items:
