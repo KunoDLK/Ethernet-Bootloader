@@ -510,7 +510,7 @@ static void metadata_defaults_ram(void)
   g_kv_ram.hardware_poll_period_ms = BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS;
   g_kv_ram.rail_a_mode = BOOT_METADATA_DEFAULT_RAIL_MODE;
   g_kv_ram.rail_b_mode = BOOT_METADATA_DEFAULT_RAIL_MODE;
-  g_kv_ram.net_dhcp_enabled = 1U;
+  g_kv_ram.net_dhcp_enabled = 0U;
   g_kv_ram.reserved_pad = 0U;
   g_kv_ram.crc32 = 0U;
 }

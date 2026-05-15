@@ -44,7 +44,7 @@ int boot_metadata_disable_app(BootAppFaultReason reason, uint32_t pc, uint32_t l
 int boot_metadata_enable_app(void);
 void boot_metadata_get_ipv4(uint8_t ip[4], uint8_t subnet[4], uint8_t gateway[4]);
 int boot_metadata_set_ipv4(const uint8_t ip[4], const uint8_t subnet[4], const uint8_t gateway[4]);
-/** Stored preference: 0 = static IPv4 from flash, non-zero = use DHCP (default enabled). */
+/** Stored preference: 0 = static IPv4 from flash (default), non-zero = use DHCP. */
 uint8_t boot_metadata_get_net_dhcp_enabled(void);
 int boot_metadata_set_net_dhcp_enabled(uint8_t enabled);
 /** True if addr is 0.0.0.0 or 255.255.255.255 (invalid for static host / mask / gateway in flash). */
