@@ -29,6 +29,7 @@ DEFAULT_BIND_IP = "192.168.1.99"
 DEFAULT_TARGET = "255.255.255.255"
 
 OP_LIST = 0x01
+OP_PAGING = 0x80
 OP_GET = 0x02
 OP_SET = 0x03
 
@@ -44,6 +45,8 @@ PATHS = {
     "subnet": [1, 3],
     "gateway": [1, 4],
     "dhcp": [1, 5],
+    "debug": [5],
+    "flash": [5, 1],
 }
 
 
@@ -55,6 +58,7 @@ def parse_args() -> argparse.Namespace:
 
     list_cmd = subcommands.add_parser("list", help="list a node")
     list_cmd.add_argument("path", choices=PATHS.keys(), default="root", nargs="?")
+    list_cmd.add_argument("--paged", action="store_true", help="request LIST pages until has_more clears")
 
     get_cmd = subcommands.add_parser("get", help="get a leaf value")
     get_cmd.add_argument("path", choices=["mac", "address", "subnet", "gateway", "dhcp"])
@@ -120,7 +124,7 @@ def send_bcast_tree(sock: socket.socket, target: str, uid: bytes, tree_payload: 
     raise RuntimeError("no control reply received")
 
 
-def decode_tree_reply(payload: bytes) -> tuple[int, bytes]:
+def decode_tree_reply(payload: bytes) -> tuple[int, int, bytes]:
     if len(payload) < 6:
         raise RuntimeError("short device-tree reply")
     op = payload[0]
@@ -129,21 +133,24 @@ def decode_tree_reply(payload: bytes) -> tuple[int, bytes]:
     result, response_len = struct.unpack_from("<hH", payload, result_offset)
     response = payload[result_offset + 4 : result_offset + 4 + response_len]
     print(f"op=0x{op:02x} result={result} response_len={response_len}")
-    return result, response
+    return op, result, response
 
 
-def print_list(response: bytes) -> None:
+def print_list(response: bytes) -> int:
     count = struct.unpack_from("<H", response, 0)[0]
     offset = 2
+    last_node_id = 0
     print(f"{count} item(s)")
     for _ in range(count):
         node_id = response[offset]
+        last_node_id = node_id
         has_children = response[offset + 1]
         access = response[offset + 2]
         data_len = struct.unpack_from("<H", response, offset + 3)[0]
         data = response[offset + 5 : offset + 5 + data_len].decode("utf-8", errors="replace")
         offset += 5 + data_len
         print(f"  id={node_id} children={has_children} access=0x{access:02x} {data}")
+    return last_node_id
 
 
 def main() -> int:
@@ -162,26 +169,62 @@ def main() -> int:
             value = args.value.encode("utf-8")
             tree_payload = build_tree_payload(OP_SET, location, struct.pack("<H", len(value)) + value)
         else:
-            tree_payload = build_tree_payload(OP_LIST, location)
+            op = OP_LIST
+            op_payload = b""
+            if getattr(args, "paged", False):
+                op = OP_LIST | OP_PAGING
+                op_payload = bytes([0])
+            tree_payload = build_tree_payload(op, location, op_payload)
 
-        inner_type, payload = send_bcast_tree(sock, args.target, uid, tree_payload)
-        if inner_type == MSG_ERROR_REPLY:
-            result, detail = struct.unpack_from("<hH", payload)
-            print(f"error result={result} detail={detail}")
-            return 1
-        if inner_type != MSG_DEVICETREE_REPLY:
-            print(f"unexpected inner reply 0x{inner_type:02x}")
-            return 1
-
-        result, response = decode_tree_reply(payload)
-        if result != 0:
-            return 1
         if args.command == "list":
-            print_list(response)
+            while True:
+                inner_type, payload = send_bcast_tree(sock, args.target, uid, tree_payload)
+                if inner_type == MSG_ERROR_REPLY:
+                    result, detail = struct.unpack_from("<hH", payload)
+                    print(f"error result={result} detail={detail}")
+                    return 1
+                if inner_type != MSG_DEVICETREE_REPLY:
+                    print(f"unexpected inner reply 0x{inner_type:02x}")
+                    return 1
+
+                reply_op, result, response = decode_tree_reply(payload)
+                if result != 0:
+                    return 1
+                last_node_id = print_list(response)
+                has_more = (reply_op & OP_PAGING) != 0
+                print(f"has_more={has_more}")
+                if not getattr(args, "paged", False) or not has_more:
+                    break
+                if last_node_id == 0:
+                    print("paged LIST made no progress")
+                    return 1
+                tree_payload = build_tree_payload(OP_LIST | OP_PAGING, location, bytes([last_node_id]))
         elif args.command == "get":
+            inner_type, payload = send_bcast_tree(sock, args.target, uid, tree_payload)
+            if inner_type == MSG_ERROR_REPLY:
+                result, detail = struct.unpack_from("<hH", payload)
+                print(f"error result={result} detail={detail}")
+                return 1
+            if inner_type != MSG_DEVICETREE_REPLY:
+                print(f"unexpected inner reply 0x{inner_type:02x}")
+                return 1
+            _reply_op, result, response = decode_tree_reply(payload)
+            if result != 0:
+                return 1
             value_len = struct.unpack_from("<H", response)[0]
             print(response[2 : 2 + value_len].decode("utf-8", errors="replace"))
         else:
+            inner_type, payload = send_bcast_tree(sock, args.target, uid, tree_payload)
+            if inner_type == MSG_ERROR_REPLY:
+                result, detail = struct.unpack_from("<hH", payload)
+                print(f"error result={result} detail={detail}")
+                return 1
+            if inner_type != MSG_DEVICETREE_REPLY:
+                print(f"unexpected inner reply 0x{inner_type:02x}")
+                return 1
+            _reply_op, result, response = decode_tree_reply(payload)
+            if result != 0:
+                return 1
             print(f"reboot_required={response[0] if response else 0}")
     return 0
 

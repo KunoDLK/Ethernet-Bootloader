@@ -12,6 +12,8 @@
 #define BOOT_METADATA_VERSION           (7U)
 #define BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS (10U)
 #define BOOT_METADATA_DEFAULT_RAIL_MODE (0U) /* 0=Disabled, 1=Enabled, 2=Follow Estop */
+#define BOOT_METADATA_STORED_KV_MAX     (96U)
+#define BOOT_METADATA_KV_VALUE_MAX      (236U)
 
 typedef enum
 {
@@ -68,9 +70,8 @@ uint32_t boot_metadata_get_current_settings_object_size_bytes(void);
 
 /* Debug / device tree: canonical + extra stored KVs merged, sorted ascending by node id. */
 uint16_t boot_metadata_stored_kv_count(void);
-/** sorted_index is 1-based (matches device-tree child ids). Returns 0 on success, -1 on range. */
-int boot_metadata_format_stored_kv(uint16_t sorted_index_one_based, char *name_out, size_t name_cap,
-                                   char *value_out, size_t value_cap);
+int boot_metadata_read_stored_kv_raw(uint16_t sorted_index_one_based, uint32_t *key_out,
+                                     uint8_t *value_out, uint16_t value_cap, uint16_t *value_len_out);
 
 /** AppApiStorage: key is NUL-terminated ASCII; persists in generic TLV under BOOT_KV_APP_STORAGE_BASE|^hash. */
 int boot_metadata_storage_read_string_key(const char *key, void *data, size_t max_length,

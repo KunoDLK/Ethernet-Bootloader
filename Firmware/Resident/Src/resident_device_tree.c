@@ -82,6 +82,9 @@ static ResidentAppTreeMount g_app_mount;
 static volatile bool g_reboot_requested;
 static StaticTask_t g_reboot_task_cb;
 static StackType_t g_reboot_task_stack[128];
+static ResidentTreeListItem g_list_items[BOOT_METADATA_STORED_KV_MAX + 8U];
+static char g_flash_kv_names[BOOT_METADATA_STORED_KV_MAX][16];
+static char g_flash_kv_values[BOOT_METADATA_STORED_KV_MAX][64];
 
 static void format_ipv4(const uint8_t value[4], char *text, size_t text_size)
 {
@@ -459,6 +462,41 @@ static int append_list_item(uint8_t *response, uint16_t response_max, uint16_t *
   return append_bytes(response, response_max, offset, json, (uint16_t)json_len);
 }
 
+static uint16_t list_item_encoded_len(const ResidentTreeListItem *item)
+{
+  uint8_t scratch[512];
+  uint16_t offset = 0U;
+
+  if (append_list_item(scratch, sizeof(scratch), &offset, item) != PROTO_RESULT_OK)
+  {
+    return 0U;
+  }
+
+  return offset;
+}
+
+static void bytes_to_hex_text(const uint8_t *bytes, uint16_t byte_len, char *hex_out, size_t hex_cap)
+{
+  uint16_t i;
+
+  if ((hex_out == 0) || (hex_cap == 0U))
+  {
+    return;
+  }
+  hex_out[0] = '\0';
+
+  if (bytes == 0)
+  {
+    return;
+  }
+
+  for (i = 0U; (i < byte_len) && ((((size_t)i * 2U) + 2U) <= (hex_cap - 1U)); i++)
+  {
+    (void)snprintf(hex_out + ((size_t)i * 2U), hex_cap - ((size_t)i * 2U),
+                   "%02X", (unsigned int)bytes[i]);
+  }
+}
+
 static bool location_is_root(const uint8_t *location, uint8_t depth)
 {
   (void)location;
@@ -611,6 +649,13 @@ static bool location_is_flash_current_settings_object_size(const uint8_t *locati
          (location[2] == TREE_ID_FLASH_CURRENT_SETTINGS_OBJECT_SIZE);
 }
 
+static bool location_is_flash_stored_kv(const uint8_t *location, uint8_t depth)
+{
+  return (depth == 3U) && (location[0] == TREE_ID_DEBUG) &&
+         (location[1] == TREE_ID_DEBUG_FLASH) &&
+         (location[2] > TREE_ID_FLASH_CURRENT_SETTINGS_OBJECT_SIZE);
+}
+
 static bool app_action_name_is_valid(const char *path)
 {
   if ((path == 0) || (path[0] == '\0'))
@@ -745,12 +790,15 @@ int resident_device_tree_register_app_action(AppDeviceTreeMount mount, const cha
   return 0;
 }
 
-int resident_device_tree_list(const uint8_t *location, uint8_t depth,
-                              uint8_t *response, uint16_t response_max, uint16_t *response_len)
+int resident_device_tree_list(const uint8_t *location, uint8_t depth, uint8_t start_after,
+                              uint8_t *response, uint16_t response_max, uint16_t *response_len,
+                              bool *has_more)
 {
   uint16_t offset = 0U;
-  ResidentTreeListItem items[TREE_APP_ACTION_MAX + 8U];
+  ResidentTreeListItem *items = g_list_items;
   uint16_t count = 0U;
+  uint16_t emitted_count = 0U;
+  bool cursor_open = false;
   uint8_t ip[4];
   uint8_t subnet[4];
   uint8_t gateway[4];
@@ -772,11 +820,15 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
   char flash_bytes_remaining_text[24];
   char flash_settings_phys_addr_text[20];
   char flash_settings_obj_size_text[16];
+  uint8_t raw_kv_value[BOOT_METADATA_KV_VALUE_MAX];
 
-  if ((response == 0) || (response_len == 0) || ((depth != 0U) && (location == 0)))
+  if ((response == 0) || (response_len == 0) || (has_more == 0) ||
+      ((depth != 0U) && (location == 0)))
   {
     return PROTO_RESULT_PARSE;
   }
+
+  *has_more = false;
 
   if (boot_metadata_get_net_dhcp_enabled() != 0U)
   {
@@ -913,6 +965,23 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
                                             "Current Settings Object Size", flash_settings_obj_size_text,
                                             0,
                                             "KV blob record_total: logical byte length including trailing CRC"};
+    const uint16_t kv_count = boot_metadata_stored_kv_count();
+    const uint16_t kv_limit = (kv_count > BOOT_METADATA_STORED_KV_MAX) ? BOOT_METADATA_STORED_KV_MAX : kv_count;
+    for (uint16_t i = 0U; i < kv_limit; i++)
+    {
+      uint32_t raw_key;
+      uint16_t raw_len;
+      if (boot_metadata_read_stored_kv_raw((uint16_t)(i + 1U), &raw_key,
+                                           raw_kv_value, sizeof(raw_kv_value), &raw_len) == 0)
+      {
+        (void)snprintf(g_flash_kv_names[i], sizeof(g_flash_kv_names[i]), "0x%08lX", (unsigned long)raw_key);
+        bytes_to_hex_text(raw_kv_value, raw_len, g_flash_kv_values[i], sizeof(g_flash_kv_values[i]));
+        items[count++] = (ResidentTreeListItem){(uint8_t)(TREE_ID_FLASH_CURRENT_SETTINGS_OBJECT_SIZE + i + 1U),
+                                                0U, TREE_ACCESS_READ,
+                                                g_flash_kv_names[i], g_flash_kv_values[i],
+                                                0, "Raw stored boot metadata KV value (hex)"};
+      }
+    }
   }
   else if (location_is_app(location, depth) && g_app_mount.mounted)
   {
@@ -928,20 +997,46 @@ int resident_device_tree_list(const uint8_t *location, uint8_t depth,
     return PROTO_RESULT_NOT_FOUND;
   }
 
-  if (append_u16(response, response_max, &offset, count) != PROTO_RESULT_OK)
+  if (append_u16(response, response_max, &offset, 0U) != PROTO_RESULT_OK)
   {
     return PROTO_RESULT_GENERIC;
   }
 
   for (uint16_t i = 0U; i < count; i++)
   {
+    if (!cursor_open)
+    {
+      if (start_after == 0U)
+      {
+        cursor_open = true;
+      }
+      else if (items[i].id == start_after)
+      {
+        cursor_open = true;
+        continue;
+      }
+      else
+      {
+        continue;
+      }
+    }
+
+    const uint16_t encoded_len = list_item_encoded_len(&items[i]);
+    if ((encoded_len == 0U) || ((offset + encoded_len) > response_max))
+    {
+      *has_more = true;
+      break;
+    }
+
     const int result = append_list_item(response, response_max, &offset, &items[i]);
     if (result != PROTO_RESULT_OK)
     {
       return result;
     }
+    emitted_count++;
   }
 
+  memcpy(response, &emitted_count, sizeof(emitted_count));
   *response_len = offset;
   return PROTO_RESULT_OK;
 }
@@ -955,6 +1050,7 @@ int resident_device_tree_get(const uint8_t *location, uint8_t depth,
   uint8_t ip[4];
   uint8_t subnet[4];
   uint8_t gateway[4];
+  uint8_t raw_kv_value[BOOT_METADATA_KV_VALUE_MAX];
 
   if ((location == 0) || (response == 0) || (response_len == 0))
   {
@@ -1039,6 +1135,18 @@ int resident_device_tree_get(const uint8_t *location, uint8_t depth,
   {
     (void)snprintf(value, sizeof(value), "%lu",
                    (unsigned long)boot_metadata_get_current_settings_object_size_bytes());
+  }
+  else if (location_is_flash_stored_kv(location, depth))
+  {
+    const uint16_t kv_index = (uint16_t)(location[2] - TREE_ID_FLASH_CURRENT_SETTINGS_OBJECT_SIZE);
+    uint32_t raw_key;
+    uint16_t raw_len;
+    if (boot_metadata_read_stored_kv_raw(kv_index, &raw_key, raw_kv_value, sizeof(raw_kv_value), &raw_len) != 0)
+    {
+      return PROTO_RESULT_NOT_FOUND;
+    }
+    (void)raw_key;
+    bytes_to_hex_text(raw_kv_value, raw_len, value, sizeof(value));
   }
   else if (location_is_reboot(location, depth) || location_is_app_action(location, depth))
   {
@@ -1187,7 +1295,8 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
         location_is_flash_bytes_used(location, depth) ||
         location_is_flash_bytes_remaining(location, depth) ||
         location_is_flash_current_settings_phys_addr(location, depth) ||
-        location_is_flash_current_settings_object_size(location, depth))
+        location_is_flash_current_settings_object_size(location, depth) ||
+        location_is_flash_stored_kv(location, depth))
     {
       return PROTO_RESULT_INVALID_VALUE;
     }
@@ -1286,7 +1395,8 @@ int resident_device_tree_execute(const uint8_t *location, uint8_t depth,
       location_is_flash_current_settings_slot(location, depth) ||
       location_is_flash_bytes_used(location, depth) || location_is_flash_bytes_remaining(location, depth) ||
       location_is_flash_current_settings_phys_addr(location, depth) ||
-      location_is_flash_current_settings_object_size(location, depth))
+      location_is_flash_current_settings_object_size(location, depth) ||
+      location_is_flash_stored_kv(location, depth))
   {
     return PROTO_RESULT_INVALID_VALUE;
   }

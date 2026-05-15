@@ -54,6 +54,7 @@ DISCOVERY_HEADER = struct.Struct("<IBBHI")
 COMMAND_HEADER = struct.Struct("<IBBHIHH")
 DISCOVERY_REPLY = struct.Struct("<IBBHI12s6s4s4s4sIII")
 DEVICE_TREE_OP_LIST = 0x01
+DEVICE_TREE_OP_PAGING = 0x80
 DEVICE_TREE_OP_GET = 0x02
 DEVICE_TREE_OP_SET = 0x03
 DEVICE_TREE_OP_EXECUTE = 0x04
@@ -538,7 +539,7 @@ def _ignore_udp_recv_oserror(exc: OSError) -> bool:
     return False
 
 
-def send_device_tree_request(
+def send_device_tree_request_with_reply_op(
     bind_ip: str,
     target: str,
     fallback_target: str | None,
@@ -549,13 +550,13 @@ def send_device_tree_request(
     timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
     normal_rtt_s: float = DEFAULT_CONTROL_RTT_S,
     on_response: Callable[[str, float], None] | None = None,
-) -> tuple[bool, bytes, str]:
+) -> tuple[bool, int, bytes, str]:
     tree_payload = build_device_tree_request(op, location, op_payload)
     inner = bytes([PROTO_MSG_DEVICETREE_REQ]) + struct.pack("<H", len(tree_payload)) + tree_payload
     payload = uid + inner
     transaction_id = random.SystemRandom().randrange(0, 0x1_0000_0000)
 
-    def attempt(dst: str, wait_s: float) -> tuple[bool, bytes, str]:
+    def attempt(dst: str, wait_s: float) -> tuple[bool, int, bytes, str]:
         packet = (
             COMMAND_HEADER.pack(
                 PROTO_MAGIC,
@@ -613,37 +614,65 @@ def send_device_tree_request(
                 inner_payload = reply_payload[15 : 15 + inner_len]
                 if inner_type == PROTO_MSG_ERROR_REPLY:
                     result, detail = struct.unpack_from("<hH", inner_payload)
-                    return False, b"", f"error {result} detail {detail}"
+                    return False, 0, b"", f"error {result} detail {detail}"
                 if inner_type != PROTO_MSG_DEVICETREE_REPLY or len(inner_payload) < 6:
-                    return False, b"", f"unexpected reply 0x{inner_type:02x}"
+                    return False, 0, b"", f"unexpected reply 0x{inner_type:02x}"
 
+                reply_op = inner_payload[0]
                 depth = inner_payload[1]
                 result_offset = 2 + depth
                 result, response_len = struct.unpack_from("<hH", inner_payload, result_offset)
                 response = inner_payload[result_offset + 4 : result_offset + 4 + response_len]
                 if result != 0:
-                    return False, b"", f"request failed result {result}"
-                return True, response, "ok"
+                    return False, reply_op, b"", f"request failed result {result}"
+                return True, reply_op, response, "ok"
 
-        return False, b"", "request timed out"
+        return False, 0, b"", "request timed out"
 
     max_retry_s = max(min(timeout_s, MAX_CONTROL_RETRY_S), MIN_CONTROL_RETRY_S)
     retry_s = min(max(normal_rtt_s * 2.0, MIN_CONTROL_RETRY_S), max_retry_s)
     while retry_s <= max_retry_s:
-        ok, response, message = attempt(target, retry_s)
+        ok, reply_op, response, message = attempt(target, retry_s)
         if ok:
-            return ok, response, message
+            return ok, reply_op, response, message
         if message != "request timed out":
-            return ok, response, message
+            return ok, reply_op, response, message
         retry_s *= 2.0
 
     if fallback_target and fallback_target != target:
-        ok2, response2, message2 = attempt(fallback_target, MAX_CONTROL_RETRY_S)
+        ok2, reply_op2, response2, message2 = attempt(fallback_target, MAX_CONTROL_RETRY_S)
         if ok2:
-            return ok2, response2, "ok (broadcast fallback)"
-        return ok2, response2, message2
+            return ok2, reply_op2, response2, "ok (broadcast fallback)"
+        return ok2, reply_op2, response2, message2
 
-    return False, b"", "request timed out"
+    return False, 0, b"", "request timed out"
+
+
+def send_device_tree_request(
+    bind_ip: str,
+    target: str,
+    fallback_target: str | None,
+    uid: bytes,
+    op: int,
+    location: list[int],
+    op_payload: bytes = b"",
+    timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
+    normal_rtt_s: float = DEFAULT_CONTROL_RTT_S,
+    on_response: Callable[[str, float], None] | None = None,
+) -> tuple[bool, bytes, str]:
+    ok, _reply_op, response, message = send_device_tree_request_with_reply_op(
+        bind_ip,
+        target,
+        fallback_target,
+        uid,
+        op,
+        location,
+        op_payload,
+        timeout_s=timeout_s,
+        normal_rtt_s=normal_rtt_s,
+        on_response=on_response,
+    )
+    return ok, response, message
 
 
 def set_device_tree_value(
@@ -714,58 +743,74 @@ def list_device_tree_node(
     normal_rtt_s: float = DEFAULT_CONTROL_RTT_S,
     on_response: Callable[[str, float], None] | None = None,
 ) -> tuple[bool, list[TreeItem], str]:
-    ok, response, message = send_device_tree_request(
-        bind_ip,
-        target,
-        fallback_target,
-        uid,
-        DEVICE_TREE_OP_LIST,
-        location,
-        timeout_s=timeout_s,
-        normal_rtt_s=normal_rtt_s,
-        on_response=on_response,
-    )
-    if not ok:
-        return False, [], message
-    if len(response) < 2:
-        return False, [], "short LIST reply"
-
-    count = struct.unpack_from("<H", response, 0)[0]
-    offset = 2
     items: list[TreeItem] = []
-    for _ in range(count):
-        if offset + 5 > len(response):
-            return False, items, "truncated LIST item"
-        node_id = response[offset]
-        has_children = response[offset + 1] != 0
-        access = response[offset + 2]
-        data_len = struct.unpack_from("<H", response, offset + 3)[0]
-        data_start = offset + 5
-        data_end = data_start + data_len
-        if data_end > len(response):
-            return False, items, "truncated LIST metadata"
-        metadata = json.loads(response[data_start:data_end].decode("utf-8"))
-        items.append(
-            TreeItem(
-                node_id=node_id,
-                has_children=has_children,
-                access=access,
-                name=metadata_string(metadata, "Name", "name") or f"Node {node_id}",
-                value=metadata_string(metadata, "Value", "value"),
-                write_effect=metadata_string(metadata, "WriteEffect", "write_effect"),
-                description=metadata_string(metadata, "Description", "description"),
-                action=bool(metadata.get("Action", metadata.get("action", False))),
-                unit=metadata_string(metadata, "Unit", "unit"),
-                enum_values=[
-                    str(item)
-                    for item in metadata.get("Enum", metadata.get("enum", []))
-                    if isinstance(item, str)
-                ],
-            )
-        )
-        offset = data_end
+    start_after = 0
+    page = 0
 
-    return True, items, "ok"
+    while True:
+        op_payload = bytes([start_after]) if page > 0 else b""
+        ok, reply_op, response, message = send_device_tree_request_with_reply_op(
+            bind_ip,
+            target,
+            fallback_target,
+            uid,
+            DEVICE_TREE_OP_LIST | (DEVICE_TREE_OP_PAGING if page > 0 else 0),
+            location,
+            op_payload,
+            timeout_s=timeout_s,
+            normal_rtt_s=normal_rtt_s,
+            on_response=on_response,
+        )
+        if not ok:
+            return False, items, message
+        if len(response) < 2:
+            return False, items, "short LIST reply"
+
+        count = struct.unpack_from("<H", response, 0)[0]
+        offset = 2
+        page_items: list[TreeItem] = []
+        for _ in range(count):
+            if offset + 5 > len(response):
+                return False, items, "truncated LIST item"
+            node_id = response[offset]
+            has_children = response[offset + 1] != 0
+            access = response[offset + 2]
+            data_len = struct.unpack_from("<H", response, offset + 3)[0]
+            data_start = offset + 5
+            data_end = data_start + data_len
+            if data_end > len(response):
+                return False, items, "truncated LIST metadata"
+            metadata = json.loads(response[data_start:data_end].decode("utf-8"))
+            page_items.append(
+                TreeItem(
+                    node_id=node_id,
+                    has_children=has_children,
+                    access=access,
+                    name=metadata_string(metadata, "Name", "name") or f"Node {node_id}",
+                    value=metadata_string(metadata, "Value", "value"),
+                    write_effect=metadata_string(metadata, "WriteEffect", "write_effect"),
+                    description=metadata_string(metadata, "Description", "description"),
+                    action=bool(metadata.get("Action", metadata.get("action", False))),
+                    unit=metadata_string(metadata, "Unit", "unit"),
+                    enum_values=[
+                        str(item)
+                        for item in metadata.get("Enum", metadata.get("enum", []))
+                        if isinstance(item, str)
+                    ],
+                )
+            )
+            offset = data_end
+
+        items.extend(page_items)
+        has_more = (reply_op & DEVICE_TREE_OP_PAGING) != 0
+        if not has_more:
+            return True, items, "ok"
+        if not page_items:
+            return False, items, "paged LIST made no progress"
+        start_after = page_items[-1].node_id
+        page += 1
+        if page > 255:
+            return False, items, "paged LIST exceeded iteration cap"
 
 
 def get_device_tree_value(

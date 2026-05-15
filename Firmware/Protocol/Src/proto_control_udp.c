@@ -41,6 +41,8 @@ typedef struct __attribute__((packed))
 #define DEVICETREE_OP_SET              (0x03U)
 #define DEVICETREE_OP_EXECUTE          (0x04U)
 #define DEVICETREE_OP_UNLOCK           (0x05U)
+#define DEVICETREE_OP_BASE_MASK        (0x7FU)
+#define DEVICETREE_OP_LIST_PAGING      (0x80U)
 #define DEVICE_UID_BYTES               (12U)
 #define BCAST_UID_REQ_MIN_LEN          (DEVICE_UID_BYTES + 1U + sizeof(uint16_t))
 #define BCAST_UID_REPLY_OVERHEAD       (DEVICE_UID_BYTES + 1U + sizeof(uint16_t))
@@ -142,6 +144,7 @@ static int build_device_tree_reply(const uint8_t *request_payload, uint16_t requ
   uint16_t op_payload_len;
   uint16_t tree_response_len = 0U;
   int16_t result = PROTO_RESULT_OK;
+  bool list_has_more = false;
 
   if ((request_payload == 0) || (reply_payload == 0) || (reply_payload_len == 0) ||
       (request_payload_len < sizeof(DeviceTreeRequestPrefix)))
@@ -150,6 +153,7 @@ static int build_device_tree_reply(const uint8_t *request_payload, uint16_t requ
   }
 
   const DeviceTreeRequestPrefix *prefix = (const DeviceTreeRequestPrefix *)request_payload;
+  const uint8_t base_op = prefix->op & DEVICETREE_OP_BASE_MASK;
   const uint8_t node_depth = prefix->node_depth;
   const uint8_t *node_location = request_payload + sizeof(DeviceTreeRequestPrefix);
   if ((node_depth > 16U) ||
@@ -171,7 +175,7 @@ static int build_device_tree_reply(const uint8_t *request_payload, uint16_t requ
     return PROTO_RESULT_GENERIC;
   }
 
-  reply_payload[offset++] = prefix->op;
+  reply_payload[offset++] = base_op;
   reply_payload[offset++] = node_depth;
   if (node_depth != 0U)
   {
@@ -179,12 +183,31 @@ static int build_device_tree_reply(const uint8_t *request_payload, uint16_t requ
     offset += node_depth;
   }
 
-  switch (prefix->op)
+  switch (base_op)
   {
     case DEVICETREE_OP_LIST:
-      result = (int16_t)resident_device_tree_list(node_location, node_depth, g_tree_response,
-                                                  sizeof(g_tree_response), &tree_response_len);
+    {
+      uint8_t start_after = 0U;
+      if ((prefix->op & DEVICETREE_OP_LIST_PAGING) != 0U)
+      {
+        if (op_payload_len != 1U)
+        {
+          result = PROTO_RESULT_PARSE;
+          break;
+        }
+        start_after = op_payload[0];
+      }
+      else if (op_payload_len != 0U)
+      {
+        result = PROTO_RESULT_PARSE;
+        break;
+      }
+
+      result = (int16_t)resident_device_tree_list(node_location, node_depth, start_after,
+                                                  g_tree_response, sizeof(g_tree_response),
+                                                  &tree_response_len, &list_has_more);
       break;
+    }
 
     case DEVICETREE_OP_GET:
       result = (int16_t)resident_device_tree_get(node_location, node_depth, g_tree_response,
@@ -270,6 +293,11 @@ static int build_device_tree_reply(const uint8_t *request_payload, uint16_t requ
     default:
       result = PROTO_RESULT_NOT_FOUND;
       break;
+  }
+
+  if (base_op == DEVICETREE_OP_LIST)
+  {
+    reply_payload[0] = (uint8_t)(base_op | (list_has_more ? DEVICETREE_OP_LIST_PAGING : 0U));
   }
 
   if ((offset + sizeof(result) + sizeof(tree_response_len) + tree_response_len) > reply_payload_max)

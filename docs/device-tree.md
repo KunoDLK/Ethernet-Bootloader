@@ -75,7 +75,7 @@ All operations are carried inside `DEVICETREE_REQ`/`DEVICETREE_REPLY` command me
 
 | Field | Size | Type | Notes |
 |---|---:|---|---|
-| `op` | 1 | u8 | enum below |
+| `op` | 1 | u8 | opcode; for `LIST`, bit 7 enables paging |
 | `node_depth` | 1 | u8 | number of node location bytes after this field |
 | `node_location` | N | bytes | one byte per tree level |
 | `payload_len` | 2 | u16 | bytes of op-specific payload |
@@ -87,7 +87,7 @@ The response mirrors the request addressing first, then appends operation result
 
 | Field | Size | Type | Notes |
 |---|---:|---|---|
-| `op` | 1 | u8 | copied from request |
+| `op` | 1 | u8 | base opcode; for `LIST`, bit 7 means `has_more` |
 | `node_depth` | 1 | u8 | copied from request |
 | `node_location` | N | bytes | copied from request |
 | `result` | 2 | i16 | 0 = OK; negative = error |
@@ -115,7 +115,14 @@ Meaning:
 - `0A`: child node ID 10 under node 1
 - `02`: child node ID 2 under node 10
 
-`op` values:
+`op` encoding:
+
+- Bits 6:0 (`op & 0x7f`) are the base opcode.
+- On `LIST` requests, bit 7 (`0x80`) means the payload contains a one-byte `start_after` cursor.
+- On `LIST` replies, bit 7 (`0x80`) means `has_more`: the reply was truncated at an item boundary and the host should request another page.
+- For other replies, bit 7 is cleared.
+
+Base `op` values:
 
 | `op` | Name |
 |---:|---|
@@ -128,13 +135,25 @@ Meaning:
 
 ### LIST
 
-Request payload: empty.
+Non-paged request payload: empty.
+
+Paged request payload (`op = 0x81`):
+
+| Field | Size | Type | Notes |
+|---|---:|---|---|
+| `start_after` | 1 | u8 | resume after the child whose `node_id` matches this cursor in firmware wire order; use 0 for the first page |
 
 `LIST` returns only the direct children of the specified node location.
 
 - `node_depth = 0`: returns top-level nodes only.
 - `node_depth = 1`: returns direct children under that top-level node.
 - deeper subnodes require separate requests.
+
+Large replies may be truncated before `TREE_RESPONSE_MAX`; in that case the reply `op` is `0x81`.
+The host should start with `start_after = 0`, then repeat while `has_more` is set using the last emitted child `node_id` as the next `start_after`.
+Ordering follows the firmware's emitted sibling order, not a separate numeric sort.
+
+The resident debug Flash subtree exposes stored KV entries generically: each KV child uses the raw key as a hex `Name` (for example `0x00000008`) and returns raw value bytes as hex text. The bootloader does not apply schema-specific formatting for these debug KV nodes.
 
 Reply payload:
 

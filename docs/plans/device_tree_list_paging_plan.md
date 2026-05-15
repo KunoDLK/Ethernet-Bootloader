@@ -15,7 +15,7 @@ This document records the agreed **v1-in-development** extension: page large sib
 - **Bits 6:0 (`op & 0x7f`)**: base opcode (`LIST = 0x01`, enum unchanged).
 - **Bit7 `0x80` on `LIST` requests**: **paging / cursor mode** enabled.
   - Request **`op_payload` MUST be exactly 1 byte**: `start_after` (`u8`).
-  - Device lists **direct children** at `(node_depth, node_location)` but **skips siblings in firmware wire order** until **`node_id > start_after`**, then emits from that point.
+  - Device lists **direct children** at `(node_depth, node_location)` and resumes after the sibling whose `node_id == start_after` in firmware wire order.
 - **Bit7 `0x80` on `LIST` replies**: **`has_more`** — reply was **truncated** at an item boundary because the encoded list would exceed the firmware response buffer / framing limit; more siblings remain after the last returned item.
   - Reply **`op` = `(0x01 | (has_more ? 0x80 : 0))`** for LIST (i.e. base `LIST` | bit7). Other operations: **reply bit7 cleared** unless documented otherwise later.
 
@@ -30,7 +30,7 @@ This document records the agreed **v1-in-development** extension: page large sib
 
 ### Ordering note (normative for implementers)
 
-Paging uses the **order the firmware emits children today** (insertion order into the internal list builder in [`Firmware/Resident/Src/resident_device_tree.c`](../../Firmware/Resident/Src/resident_device_tree.c)), **not** necessarily sorted by numeric `node_id`. The host must treat `start_after` as a **cursor in that wire order** (skip-until-`node_id > start_after`), not as a global ID range.
+Paging uses the **order the firmware emits children today** (insertion order into the internal list builder in [`Firmware/Resident/Src/resident_device_tree.c`](../../Firmware/Resident/Src/resident_device_tree.c)), **not** necessarily sorted by numeric `node_id`. The host must treat `start_after` as a **cursor in that wire order** (resume after the matching `node_id`), not as a global ID range.
 
 ```mermaid
 sequenceDiagram

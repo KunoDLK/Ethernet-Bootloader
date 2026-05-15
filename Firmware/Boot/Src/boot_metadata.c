@@ -39,7 +39,7 @@ typedef struct
 _Static_assert(sizeof(BootKvRam) <= 128U, "KV RAM decode image unexpectedly large");
 
 #define BOOT_KV_EXTRA_MAX          (48U)
-#define BOOT_KV_EXTRA_VALUE_MAX    (236U)
+#define BOOT_KV_EXTRA_VALUE_MAX    (BOOT_METADATA_KV_VALUE_MAX)
 #define BOOT_SETTINGS_SCRATCH_MAX  (4096U)
 #define BOOT_SETTINGS_ALIGNMENT    (8U)
 
@@ -66,7 +66,7 @@ static uint8_t g_extra_count;
 static BootU32Decoded g_u32_scratch[24];
 static uint8_t g_u32_decoded_count;
 
-#define BOOT_METADATA_SORTED_CAP (BOOT_KV_EXTRA_MAX + 48U)
+#define BOOT_METADATA_SORTED_CAP (BOOT_METADATA_STORED_KV_MAX)
 static uint32_t g_sorted_ids[BOOT_METADATA_SORTED_CAP];
 static uint16_t g_sorted_count;
 
@@ -1145,191 +1145,6 @@ static uint8_t rail_mode_read_clamped(uint8_t raw_mode)
   return (raw_mode > 2U) ? BOOT_METADATA_DEFAULT_RAIL_MODE : raw_mode;
 }
 
-static void stored_kv_fmt_name(uint32_t node_id, char *name_out, size_t name_cap)
-{
-  if ((name_out == NULL) || (name_cap == 0U))
-  {
-    return;
-  }
-
-  name_out[0] = '\0';
-
-  switch (node_id)
-  {
-  case BOOT_KV_SEQUENCE:
-    (void)snprintf(name_out, name_cap, "seq");
-    break;
-  case BOOT_KV_APP_VALID:
-    (void)snprintf(name_out, name_cap, "app_valid");
-    break;
-  case BOOT_KV_APP_DISABLED:
-    (void)snprintf(name_out, name_cap, "app_disabled");
-    break;
-  case BOOT_KV_APP_VERSION:
-    (void)snprintf(name_out, name_cap, "app_version");
-    break;
-  case BOOT_KV_FAULT_REASON:
-    (void)snprintf(name_out, name_cap, "fault_reason");
-    break;
-  case BOOT_KV_FAULT_PC:
-    (void)snprintf(name_out, name_cap, "fault_pc");
-    break;
-  case BOOT_KV_FAULT_LR:
-    (void)snprintf(name_out, name_cap, "fault_lr");
-    break;
-  case BOOT_KV_IPV4_ADDR:
-    (void)snprintf(name_out, name_cap, "ipv4");
-    break;
-  case BOOT_KV_IPV4_SUBNET:
-    (void)snprintf(name_out, name_cap, "subnet");
-    break;
-  case BOOT_KV_IPV4_GW:
-    (void)snprintf(name_out, name_cap, "gateway");
-    break;
-  case BOOT_KV_NET_MAC:
-    (void)snprintf(name_out, name_cap, "mac");
-    break;
-  case BOOT_KV_HW_POLL_MS:
-    (void)snprintf(name_out, name_cap, "poll_ms");
-    break;
-  case BOOT_KV_RAIL_A:
-    (void)snprintf(name_out, name_cap, "rail_a");
-    break;
-  case BOOT_KV_RAIL_B:
-    (void)snprintf(name_out, name_cap, "rail_b");
-    break;
-  case BOOT_KV_NET_DHCP:
-    (void)snprintf(name_out, name_cap, "dhcp");
-    break;
-  default:
-    if ((node_id & ~BOOT_KV_APP_STORAGE_MASK) == BOOT_KV_APP_STORAGE_BASE)
-    {
-      (void)snprintf(name_out, name_cap, "app_%08lx", (unsigned long)node_id);
-    }
-    else
-    {
-      (void)snprintf(name_out, name_cap, "kv%u", (unsigned int)node_id);
-    }
-
-    break;
-  }
-}
-
-static void bytes_to_hex_trunc(const uint8_t *bytes, uint16_t byte_len, char *hex_out, size_t hex_cap)
-{
-  uint16_t i;
-
-  if ((bytes == NULL) || (hex_out == NULL) || (hex_cap < 3U))
-  {
-    if (hex_out != NULL && hex_cap > 0U)
-    {
-      hex_out[0] = '\0';
-    }
-
-    return;
-  }
-
-  for (i = 0U; (i < byte_len) && ((((size_t)i * 2U) + 2U) <= (hex_cap - 1U)); i++)
-  {
-    (void)snprintf(hex_out + ((size_t)i * 2U), hex_cap - ((size_t)i * 2U), "%02X", (unsigned int)bytes[i]);
-  }
-}
-
-static void stored_kv_fmt_value(uint32_t node_id, char *value_out, size_t value_cap)
-{
-  uint8_t buf[BOOT_KV_EXTRA_VALUE_MAX];
-  uint16_t gotlen = 0U;
-
-  if ((value_out == NULL) || (value_cap == 0U))
-  {
-    return;
-  }
-
-  value_out[0] = '\0';
-
-  if ((node_id == BOOT_KV_IPV4_ADDR) || (node_id == BOOT_KV_IPV4_SUBNET) || (node_id == BOOT_KV_IPV4_GW))
-  {
-    if (boot_metadata_kv_read_bytes(node_id, buf, (uint16_t)sizeof(buf), &gotlen) == 0)
-    {
-      if (gotlen == 4U)
-      {
-        (void)snprintf(value_out, value_cap, "%u.%u.%u.%u", (unsigned int)buf[0], (unsigned int)buf[1],
-                       (unsigned int)buf[2], (unsigned int)buf[3]);
-      }
-
-      else
-      {
-        bytes_to_hex_trunc(buf, gotlen, value_out, value_cap);
-      }
-    }
-
-    return;
-  }
-
-  if (node_id == BOOT_KV_NET_MAC)
-  {
-    if (boot_metadata_kv_read_bytes(node_id, buf, (uint16_t)sizeof(buf), &gotlen) == 0)
-    {
-      if (gotlen == 6U)
-      {
-        (void)snprintf(value_out, value_cap, "%02X:%02X:%02X:%02X:%02X:%02X", (unsigned int)buf[0],
-                       (unsigned int)buf[1], (unsigned int)buf[2], (unsigned int)buf[3],
-                       (unsigned int)buf[4], (unsigned int)buf[5]);
-      }
-
-      else
-      {
-        bytes_to_hex_trunc(buf, gotlen, value_out, value_cap);
-      }
-    }
-
-    return;
-  }
-
-  if ((node_id == BOOT_KV_RAIL_A) || (node_id == BOOT_KV_RAIL_B))
-  {
-    uint32_t v = 0U;
-
-    if (boot_metadata_kv_read_u32(node_id, &v) == 0)
-    {
-      (void)snprintf(value_out, value_cap, "%lu", (unsigned long)v);
-    }
-
-    return;
-  }
-
-  if (node_id == BOOT_KV_NET_DHCP)
-  {
-    uint8_t d = 1U;
-    uint16_t dn = 0U;
-
-    if (boot_metadata_kv_read_bytes(BOOT_KV_NET_DHCP, &d, 1U, &dn) == 0)
-    {
-      if (dn == 1U)
-      {
-        (void)snprintf(value_out, value_cap, "%u", (unsigned int)d);
-      }
-    }
-
-    return;
-  }
-
-  if (boot_metadata_kv_read_bytes(node_id, buf, (uint16_t)sizeof(buf), &gotlen) == 0)
-  {
-    bytes_to_hex_trunc(buf, gotlen, value_out, value_cap);
-    return;
-  }
-
-  {
-    uint32_t vu = 0U;
-
-    if (boot_metadata_kv_read_u32(node_id, &vu) == 0)
-    {
-      (void)snprintf(value_out, value_cap, "%lu", (unsigned long)vu);
-    }
-  }
-}
-
 int boot_metadata_kv_read_u32(uint32_t node_id, uint32_t *out)
 {
   const BootCanonEntry *e = canon_find_u32_lane_row(node_id);
@@ -1744,23 +1559,43 @@ uint16_t boot_metadata_stored_kv_count(void)
   return g_sorted_count;
 }
 
-int boot_metadata_format_stored_kv(uint16_t sorted_index_one_based, char *name_out, size_t name_cap,
-                                   char *value_out, size_t value_cap)
+int boot_metadata_read_stored_kv_raw(uint16_t sorted_index_one_based, uint32_t *key_out,
+                                     uint8_t *value_out, uint16_t value_cap, uint16_t *value_len_out)
 {
   uint32_t node_id;
+  uint32_t vu;
 
-  if ((sorted_index_one_based == 0U) || (sorted_index_one_based > g_sorted_count) || (name_out == NULL) ||
-      (value_out == NULL))
+  if (value_len_out != NULL)
+  {
+    *value_len_out = 0U;
+  }
+
+  if ((sorted_index_one_based == 0U) || (sorted_index_one_based > g_sorted_count) ||
+      (key_out == NULL) || (value_out == NULL) || (value_len_out == NULL))
   {
     return -1;
   }
 
   node_id = g_sorted_ids[(uint16_t)(sorted_index_one_based - 1U)];
+  *key_out = node_id;
 
-  stored_kv_fmt_name(node_id, name_out, name_cap);
-  stored_kv_fmt_value(node_id, value_out, value_cap);
+  if (boot_metadata_kv_read_bytes(node_id, value_out, value_cap, value_len_out) == 0)
+  {
+    return 0;
+  }
 
-  return 0;
+  if (boot_metadata_kv_read_u32(node_id, &vu) == 0)
+  {
+    if (value_cap < sizeof(vu))
+    {
+      return -1;
+    }
+    write_le_u32(value_out, vu);
+    *value_len_out = sizeof(vu);
+    return 0;
+  }
+
+  return -1;
 }
 
 int boot_metadata_storage_read_string_key(const char *key, void *data, size_t max_length, size_t *length_out)
