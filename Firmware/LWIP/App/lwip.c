@@ -46,6 +46,32 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN 1 */
 
+static bool ipv4_is_unusable_reserved(const uint8_t addr[4])
+{
+  static const uint8_t k_all_zero[4] = {0U, 0U, 0U, 0U};
+  static const uint8_t k_all_one[4] = {255U, 255U, 255U, 255U};
+
+  return (addr == 0) || (memcmp(addr, k_all_zero, 4U) == 0) ||
+         (memcmp(addr, k_all_one, 4U) == 0);
+}
+
+static bool metadata_read_bytes(uint32_t key, uint8_t *out, uint16_t expected_len)
+{
+  BootMetadataValueView value;
+  if ((out == 0) || (boot_metadata_get(key, &value) != 0) || (value.value_len != expected_len))
+  {
+    return false;
+  }
+  memcpy(out, value.value, expected_len);
+  return true;
+}
+
+static uint8_t metadata_read_u8(uint32_t key, uint8_t fallback)
+{
+  uint8_t value;
+  return metadata_read_bytes(key, &value, sizeof(value)) ? value : fallback;
+}
+
 /* USER CODE END 1 */
 
 /* Variables Initialization */
@@ -54,7 +80,7 @@ ip4_addr_t ipaddr;
 ip4_addr_t netmask;
 ip4_addr_t gw;
 /* USER CODE BEGIN OS_THREAD_ATTR_CMSIS_RTOS_V2 */
-#define INTERFACE_THREAD_STACK_SIZE ( 1024 )
+#define INTERFACE_THREAD_STACK_SIZE ( 768 )
 static StaticTask_t EthLinkTaskControlBlock;
 static StackType_t EthLinkTaskStack[INTERFACE_THREAD_STACK_SIZE / sizeof(StackType_t)];
 osThreadAttr_t attributes;
@@ -75,7 +101,7 @@ void MX_LWIP_Init(void)
   uint8_t stored_ip[4];
   uint8_t stored_netmask[4];
   uint8_t stored_gw[4];
-  const uint8_t use_dhcp = boot_metadata_get_net_dhcp_enabled();
+  const uint8_t use_dhcp = metadata_read_u8(BOOT_KV_NET_DHCP, 0U);
 
   if (use_dhcp != 0U)
   {
@@ -86,10 +112,12 @@ void MX_LWIP_Init(void)
   }
   else
   {
-    boot_metadata_get_ipv4(stored_ip, stored_netmask, stored_gw);
-    if (boot_metadata_ipv4_is_unusable_reserved(stored_ip) ||
-        boot_metadata_ipv4_is_unusable_reserved(stored_netmask) ||
-        boot_metadata_ipv4_is_unusable_reserved(stored_gw))
+    (void)metadata_read_bytes(BOOT_KV_IPV4_ADDR, stored_ip, sizeof(stored_ip));
+    (void)metadata_read_bytes(BOOT_KV_IPV4_SUBNET, stored_netmask, sizeof(stored_netmask));
+    (void)metadata_read_bytes(BOOT_KV_IPV4_GW, stored_gw, sizeof(stored_gw));
+    if (ipv4_is_unusable_reserved(stored_ip) ||
+        ipv4_is_unusable_reserved(stored_netmask) ||
+        ipv4_is_unusable_reserved(stored_gw))
     {
       printf("lwIP: stored IPv4/mask/gateway is 0.0.0.0 or 255.255.255.255; using build defaults\r\n");
       stored_ip[0] = RESIDENT_IPV4_ADDR0;

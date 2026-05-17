@@ -60,7 +60,7 @@ UART_HandleTypeDef huart6;
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 StaticTask_t defaultTaskControlBlock;
-StackType_t defaultTaskStack[1024];
+StackType_t defaultTaskStack[768];
 const osThreadAttr_t defaultTask_attributes = {
   .name = "Resident",
   .cb_mem = &defaultTaskControlBlock,

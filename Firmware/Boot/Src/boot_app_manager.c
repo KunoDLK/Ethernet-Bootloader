@@ -10,6 +10,22 @@
 static bool g_app_running;
 static AppStopFn g_app_stop;
 
+static uint32_t read_u32_le(const uint8_t *value)
+{
+  return (uint32_t)value[0] | ((uint32_t)value[1] << 8U) |
+         ((uint32_t)value[2] << 16U) | ((uint32_t)value[3] << 24U);
+}
+
+static bool metadata_u32_is_nonzero(uint32_t key)
+{
+  BootMetadataValueView value;
+  if ((boot_metadata_get(key, &value) != 0) || (value.value_len != sizeof(uint32_t)))
+  {
+    return false;
+  }
+  return read_u32_le(value.value) != 0U;
+}
+
 void boot_app_manager_init(void)
 {
   g_app_running = false;
@@ -18,7 +34,7 @@ void boot_app_manager_init(void)
 
 int boot_app_manager_start_if_valid(void)
 {
-  if (!boot_metadata_app_is_enabled() || !boot_metadata_app_is_valid())
+  if (metadata_u32_is_nonzero(BOOT_KV_APP_DISABLED) || !metadata_u32_is_nonzero(BOOT_KV_APP_VALID))
   {
     return -1;
   }

@@ -1,5 +1,6 @@
 #include "resident_api.h"
 
+#include "boot_metadata.h"
 #include "cmsis_os.h"
 #include "resident_device_tree.h"
 #include "resident_hardware.h"
@@ -47,22 +48,16 @@ static void api_log_write(const char *message)
 
 static int api_storage_read(const char *key, void *data, size_t max_length, size_t *length)
 {
-  (void)key;
-  (void)data;
-  (void)max_length;
-  if (length != 0)
-  {
-    *length = 0U;
-  }
-  return -1;
+  return boot_metadata_storage_read_string_key(key, data, max_length, length);
 }
 
 static int api_storage_write(const char *key, const void *data, size_t length)
 {
-  (void)key;
-  (void)data;
-  (void)length;
-  return -1;
+  if (boot_metadata_storage_write_string_key(key, data, length) != 0)
+  {
+    return -1;
+  }
+  return boot_metadata_save_to_flash();
 }
 
 void resident_api_init(void)

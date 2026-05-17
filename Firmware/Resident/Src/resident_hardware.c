@@ -59,6 +59,32 @@ static uint32_t clamp_poll_period(uint32_t period_ms)
     : period_ms;
 }
 
+static uint32_t read_u32_le(const uint8_t *value)
+{
+  return (uint32_t)value[0] | ((uint32_t)value[1] << 8U) |
+         ((uint32_t)value[2] << 16U) | ((uint32_t)value[3] << 24U);
+}
+
+static uint32_t metadata_read_u32(uint32_t key, uint32_t fallback)
+{
+  BootMetadataValueView value;
+  if ((boot_metadata_get(key, &value) != 0) || (value.value_len != sizeof(uint32_t)))
+  {
+    return fallback;
+  }
+  return read_u32_le(value.value);
+}
+
+static uint8_t metadata_read_u8(uint32_t key, uint8_t fallback)
+{
+  BootMetadataValueView value;
+  if ((boot_metadata_get(key, &value) != 0) || (value.value_len != sizeof(uint8_t)))
+  {
+    return fallback;
+  }
+  return value.value[0];
+}
+
 static const char *bool_text(bool value)
 {
   return value ? "High" : "Low";
@@ -350,9 +376,12 @@ void resident_hardware_init(void)
   ResidentHardwareSnapshot initial;
 
   memset(&initial, 0, sizeof(initial));
-  initial.poll_period_ms = clamp_poll_period(boot_metadata_get_hardware_poll_period_ms());
-  initial.rail_a_mode = (ResidentHardwareRailMode)boot_metadata_get_rail_a_mode();
-  initial.rail_b_mode = (ResidentHardwareRailMode)boot_metadata_get_rail_b_mode();
+  initial.poll_period_ms = clamp_poll_period(
+      metadata_read_u32(BOOT_KV_HW_POLL_MS, BOOT_METADATA_DEFAULT_HARDWARE_POLL_PERIOD_MS));
+  initial.rail_a_mode = (ResidentHardwareRailMode)metadata_read_u8(BOOT_KV_RAIL_A,
+                                                                   BOOT_METADATA_DEFAULT_RAIL_MODE);
+  initial.rail_b_mode = (ResidentHardwareRailMode)metadata_read_u8(BOOT_KV_RAIL_B,
+                                                                   BOOT_METADATA_DEFAULT_RAIL_MODE);
   (void)snprintf(initial.poll_period_text, sizeof(initial.poll_period_text), "%lu",
                  (unsigned long)initial.poll_period_ms);
   (void)snprintf(initial.estop_text, sizeof(initial.estop_text), "Low");
@@ -562,7 +591,6 @@ int resident_hardware_set_rail_mode(ResidentHardwareRailId rail, ResidentHardwar
 {
   ResidentHardwareSnapshot snapshot;
   ResidentHardwareRailMode previous_mode;
-  int meta_rc;
 
   if (mode > RESIDENT_HARDWARE_RAIL_MODE_FOLLOW_ESTOP)
   {
@@ -593,9 +621,10 @@ int resident_hardware_set_rail_mode(ResidentHardwareRailId rail, ResidentHardwar
     return -1;
   }
 
-  meta_rc = (rail == RESIDENT_HARDWARE_RAIL_A) ? boot_metadata_set_rail_a_mode((uint8_t)mode)
-                                               : boot_metadata_set_rail_b_mode((uint8_t)mode);
-  if (meta_rc != 0)
+  const uint32_t key = (rail == RESIDENT_HARDWARE_RAIL_A) ? BOOT_KV_RAIL_A : BOOT_KV_RAIL_B;
+  const uint8_t stored_mode = (uint8_t)mode;
+  if ((boot_metadata_set(key, &stored_mode, sizeof(stored_mode)) != 0) ||
+      (boot_metadata_save_to_flash() != 0))
   {
     (void)apply_rail_mode(rail, previous_mode);
     return -1;

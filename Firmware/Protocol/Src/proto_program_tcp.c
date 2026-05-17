@@ -59,6 +59,21 @@ static uint32_t g_expected_seq;
 static uint32_t g_bytes_written;
 static uint32_t g_expected_image_size;
 
+static void write_u32_le(uint8_t out[4], uint32_t value)
+{
+  out[0] = (uint8_t)(value & 0xFFU);
+  out[1] = (uint8_t)((value >> 8U) & 0xFFU);
+  out[2] = (uint8_t)((value >> 16U) & 0xFFU);
+  out[3] = (uint8_t)((value >> 24U) & 0xFFU);
+}
+
+static void store_u32_setting(uint32_t key, uint32_t value)
+{
+  uint8_t encoded[4];
+  write_u32_le(encoded, value);
+  (void)boot_metadata_set(key, encoded, sizeof(encoded));
+}
+
 static err_t send_ack(struct tcp_pcb *pcb, uint32_t seq)
 {
   ProtoProgFrameHeader header;
@@ -214,7 +229,10 @@ static err_t program_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t 
         break;
       }
 
-      (void)boot_metadata_set_app_valid(image_header.app_version);
+      store_u32_setting(BOOT_KV_APP_VALID, 1U);
+      store_u32_setting(BOOT_KV_APP_DISABLED, 0U);
+      store_u32_setting(BOOT_KV_APP_VERSION, image_header.app_version);
+      (void)boot_metadata_save_to_flash();
       (void)send_ack(pcb, header->seq);
       g_expected_seq++;
       break;

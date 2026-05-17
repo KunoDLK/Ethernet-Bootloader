@@ -155,6 +155,33 @@ Ordering follows the firmware's emitted sibling order, not a separate numeric so
 
 The resident debug Flash subtree exposes stored KV entries generically: each KV child uses the raw key as a hex `Name` (for example `0x00000008`) and returns raw value bytes as hex text. The bootloader does not apply schema-specific formatting for these debug KV nodes.
 
+## Raw KV Settings Store
+
+Resident settings are persisted by a raw KV settings store. The store has no knowledge of application or resident value types; callers own all conversion between bytes and higher-level formats such as IPv4 text, enums, integers, or JSON.
+
+The on-flash settings object keeps the existing indexed append model and integrity metadata, but the payload is a single raw entry list:
+
+| Field | Size | Type | Notes |
+|---|---:|---|---|
+| `record_total` | 4 | u32 | total bytes including CRC |
+| `magic` | 4 | u32 | raw KV object marker |
+| `version` | 4 | u32 | settings object version |
+| `entries_len` | 4 | u32 | bytes in `entries[]` |
+| `entries[]` | var | raw KV entries | packed sequentially |
+| `crc32` | 4 | u32 | CRC over all previous bytes |
+
+Each raw entry is:
+
+| Field | Size | Type | Notes |
+|---|---:|---|---|
+| `key` | 4 | u32 | caller-defined key/node ID |
+| `value_len` | 1 | u8 | bytes in `value` |
+| `value` | N | bytes | opaque payload |
+
+JSON values are stored as UTF-8 text bytes in `value`, with `value_len` giving the text byte length. The store does not parse JSON.
+
+The store initializes by finding and validating the active settings object. If no valid object exists, resident boot clears the sector and seeds defaults at the resident layer before saving. The store caches only the active settings object pointer; reads re-scan the active object each time instead of keeping a separate read cache. Writes update in-memory entries only; callers must call `SaveToFlash` to commit a group of updates in one flash append.
+
 Reply payload:
 
 | Field | Size | Type |

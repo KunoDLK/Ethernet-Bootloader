@@ -35,6 +35,12 @@ static void read_uid(uint8_t uid[12])
 #endif
 }
 
+static uint32_t read_u32_le(const uint8_t *value)
+{
+  return (uint32_t)value[0] | ((uint32_t)value[1] << 8U) |
+         ((uint32_t)value[2] << 16U) | ((uint32_t)value[3] << 24U);
+}
+
 static void discovery_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
                            const ip_addr_t *addr, u16_t port)
 {
@@ -73,10 +79,11 @@ static void discovery_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
   reply.capabilities = 0x0FUL;
   reply.resident_version = 1U;
   {
-    uint32_t app_ver = 0U;
-    if (boot_metadata_kv_read_u32(BOOT_KV_APP_VERSION, &app_ver) == 0)
+    BootMetadataValueView app_ver;
+    if ((boot_metadata_get(BOOT_KV_APP_VERSION, &app_ver) == 0) &&
+        (app_ver.value_len == sizeof(uint32_t)))
     {
-      reply.app_version = app_ver;
+      reply.app_version = read_u32_le(app_ver.value);
     }
   }
 

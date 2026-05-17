@@ -46,9 +46,9 @@ typedef struct __attribute__((packed))
 #define DEVICE_UID_BYTES               (12U)
 #define BCAST_UID_REQ_MIN_LEN          (DEVICE_UID_BYTES + 1U + sizeof(uint16_t))
 #define BCAST_UID_REPLY_OVERHEAD       (DEVICE_UID_BYTES + 1U + sizeof(uint16_t))
-/* Device-tree LIST payloads (JSON per row) exceed 512B for /Debug/Flash; keep outer reply under LAN MTU headroom */
+/* Device-tree LIST payloads (JSON per row) can be large; keep the reply well below Ethernet MTU to avoid fragmentation. */
 #define CONTROL_REPLY_PAYLOAD_MAX      (1536U)
-#define TREE_RESPONSE_MAX              (1488U)
+#define TREE_RESPONSE_MAX              (1200U)
 
 _Static_assert(CONTROL_REPLY_PAYLOAD_MAX >= TREE_RESPONSE_MAX + 2U + 16U + sizeof(int16_t) + sizeof(uint16_t),
                "DEVICE_TREE_REPLY must accommodate max-depth prefix + TREE_RESPONSE_MAX payload");
@@ -60,6 +60,12 @@ static uint8_t g_command_reply_payload[CONTROL_REPLY_PAYLOAD_MAX];
 static uint8_t g_inner_reply_payload[CONTROL_REPLY_PAYLOAD_MAX];
 static uint8_t g_outer_reply_payload[BCAST_UID_REPLY_OVERHEAD + CONTROL_REPLY_PAYLOAD_MAX];
 static uint8_t g_tree_response[TREE_RESPONSE_MAX];
+
+static uint32_t read_u32_le(const uint8_t *value)
+{
+  return (uint32_t)value[0] | ((uint32_t)value[1] << 8U) |
+         ((uint32_t)value[2] << 16U) | ((uint32_t)value[3] << 24U);
+}
 
 static void read_uid(uint8_t uid[DEVICE_UID_BYTES])
 {
@@ -341,7 +347,14 @@ static ProtoMessageType build_command_reply(ProtoMessageType request_type,
       payload.uptime_ms = osKernelGetTickCount();
       payload.resident_version = 1U;
       payload.app_version = 0U;
-      (void)boot_metadata_kv_read_u32(BOOT_KV_APP_VERSION, &payload.app_version);
+      {
+        BootMetadataValueView app_ver;
+        if ((boot_metadata_get(BOOT_KV_APP_VERSION, &app_ver) == 0) &&
+            (app_ver.value_len == sizeof(uint32_t)))
+        {
+          payload.app_version = read_u32_le(app_ver.value);
+        }
+      }
       memcpy(reply_payload, &payload, sizeof(payload));
       *reply_payload_len = sizeof(payload);
       return PROTO_MSG_PING_REPLY;

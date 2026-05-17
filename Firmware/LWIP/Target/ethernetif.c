@@ -48,7 +48,7 @@
 #define TIME_WAITING_FOR_INPUT ( portMAX_DELAY )
 /* USER CODE BEGIN OS_THREAD_STACK_SIZE_WITH_RTOS */
 /* Stack size of the interface thread */
-#define INTERFACE_THREAD_STACK_SIZE ( 2048 )
+#define INTERFACE_THREAD_STACK_SIZE ( 1536 )
 /* USER CODE END OS_THREAD_STACK_SIZE_WITH_RTOS */
 /* Network interface name */
 #define IFNAME0 's'
@@ -226,7 +226,14 @@ static void low_level_init(struct netif *netif)
   heth.Init.RxBuffLen = 1536;
 
   /* USER CODE BEGIN MACADDRESS */
-  boot_metadata_get_mac(MACAddr);
+  {
+    BootMetadataValueView stored_mac;
+    if ((boot_metadata_get(BOOT_KV_NET_MAC, &stored_mac) == 0) &&
+        (stored_mac.value_len == sizeof(MACAddr)))
+    {
+      memcpy(MACAddr, stored_mac.value, sizeof(MACAddr));
+    }
+  }
 
   /* USER CODE END MACADDRESS */
 
