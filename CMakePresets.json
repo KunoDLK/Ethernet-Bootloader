@@ -1,0 +1,56 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "arm-debug",
+      "displayName": "ARM Debug (NMake)",
+      "generator": "NMake Makefiles",
+      "binaryDir": "${sourceDir}/build/arm-debug",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "arm-vs2022",
+      "displayName": "ARM (Visual Studio 2022)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/arm-vs2022",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-toolchain.cmake"
+    },
+    {
+      "name": "arm-release",
+      "displayName": "ARM Release (NMake)",
+      "generator": "NMake Makefiles",
+      "binaryDir": "${sourceDir}/build/arm-release",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-debug",
+      "displayName": "Build Debug",
+      "configurePreset": "arm-debug"
+    },
+    {
+      "name": "build-vs2022",
+      "displayName": "Build (Visual Studio 2022)",
+      "configurePreset": "arm-vs2022",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-release",
+      "displayName": "Build Release",
+      "configurePreset": "arm-release"
+    }
+  ]
+}
+

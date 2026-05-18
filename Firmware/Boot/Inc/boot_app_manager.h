@@ -5,6 +5,7 @@
 
 void boot_app_manager_init(void);
 int boot_app_manager_start_if_valid(void);
+int boot_app_manager_start_force(void);
 int boot_app_manager_stop(void);
 int boot_app_manager_pause(void);
 int boot_app_manager_resume(void);

@@ -54,8 +54,13 @@ PROGRAM_IMAGE_CANDIDATES = [
     os.path.join(PROJECT_ROOT, "Firmware", "Debug", "Bootloader.hex"),
     os.path.join(PROJECT_ROOT, "Firmware", "Debug", "Bootloader.elf"),
 ]
+BOOT_PAYLOAD_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), "boot_payload.bin"),
+    os.path.join(PROJECT_ROOT, "Firmware", "Debug", "Bootloader.bin"),
+]
 PROGRAM_STATE_PATH = [2, 1]
 PROGRAM_TCP_PORT_PATH = [2, 2]
+PROGRAM_APPLY_BOOT_UPDATE_PATH = [2, 3]
 PROGRAM_READY_STATE = "ProgrammingReady"
 PROGRAM_ERASING_STATE = "Erasing"
 PROGRAM_STOPPED_STATE = "Stopped"
@@ -65,6 +70,10 @@ PROGRAM_BLOCK_MAX_RETRIES = 3
 PROGRAM_TCP_TIMEOUT_S = 3.0
 PROGRAM_READY_TIMEOUT_S = 30.0
 APP_STORE_SIZE_BYTES = 640 * 1024
+BOOT_PAYLOAD_BASE_OFFSET = 0x60000
+BOOT_PAYLOAD_SLOT_SIZE_BYTES = 256 * 1024
+BOOT_PAYLOAD_HEADER_MAGIC = 0x54534C42
+BOOT_PAYLOAD_HEADER = struct.Struct("<II20sI")
 APP_IMAGE_MAGIC = 0x41505031
 APP_IMAGE_ABI_VERSION = 1
 APP_IMAGE_SHA1_DIGEST_BYTES = 20
@@ -96,6 +105,8 @@ IPV4_DHCP_PATH = [1, 5]
 DEVICE_MENU_ITEMS = [
     "Device Tree",
     "Write Program",
+    "Write Boot Payload",
+    "Apply Boot Update",
     "Reboot Device",
 ]
 
@@ -108,6 +119,7 @@ PROG_FRAME_NACK = 0x82
 PROG_FLAG_RAW_STORAGE = 1 << 1
 PROG_HEADER = struct.Struct("<IBBHIHH")
 PROG_HELLO_PAYLOAD = struct.Struct("<I20s")
+PROG_HELLO_RAW_PAYLOAD = struct.Struct("<I20sI")
 PROG_DATA_LEN = struct.Struct("<H")
 PROG_FINISH_PAYLOAD = struct.Struct("<I20s")
 PROG_ACK_PAYLOAD = struct.Struct("<II")
@@ -208,6 +220,11 @@ def parse_args() -> argparse.Namespace:
             "programming payload to stream; defaults to a packaged bootloader artifact "
             "when available, otherwise a generated large stress image"
         ),
+    )
+    parser.add_argument(
+        "--boot-payload",
+        default=None,
+        help="boot payload .bin for sectors 9-10 (raw bootloader or BLST-packed blob)",
     )
     return parser.parse_args()
 
@@ -584,6 +601,68 @@ class ProgrammingWorker:
             )
             self._finish(ok, result)
         except Exception as exc:  # pragma: no cover - safety net for UI thread
+            self._apply(ProgrammingUpdate(phase="failed", status=str(exc)))
+            self._finish(False, str(exc))
+
+
+class BootPayloadWorker:
+    def __init__(
+        self,
+        bind_ip: str,
+        target: str,
+        fallback_target: str | None,
+        device: Device,
+        normal_rtt_s: float,
+        boot_payload_path: str | None,
+    ) -> None:
+        self.bind_ip = bind_ip
+        self.target = target
+        self.fallback_target = fallback_target
+        self.device = device
+        self.normal_rtt_s = normal_rtt_s
+        self.boot_payload_path = boot_payload_path
+        self._lock = threading.Lock()
+        self._snapshot = ProgrammingSnapshot(active=True)
+        self._thread = threading.Thread(target=self._run, name="BootPayload", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def snapshot(self) -> ProgrammingSnapshot:
+        with self._lock:
+            return replace(self._snapshot)
+
+    def _apply(self, update: ProgrammingUpdate) -> None:
+        with self._lock:
+            apply_programming_update(self._snapshot, update)
+
+    def _finish(self, success: bool, result: str) -> None:
+        with self._lock:
+            self._snapshot.finished = True
+            self._snapshot.success = success
+            self._snapshot.result = result
+            self._snapshot.active = False
+            if success:
+                self._snapshot.phase = "done"
+            elif self._snapshot.phase in ("idle", "loading", "erasing", "ready", "connecting", "programming", "finalizing"):
+                self._snapshot.phase = "failed"
+            if not self._snapshot.status:
+                self._snapshot.status = result
+
+    def _run(self) -> None:
+        try:
+            ok, result = run_write_boot_payload(
+                self.bind_ip,
+                self.target,
+                self.fallback_target,
+                self.device,
+                self.normal_rtt_s,
+                on_response=lambda source_ip, elapsed_s, uid=self.device.uid: None,
+                progress=self._apply,
+                boot_payload_path=self.boot_payload_path,
+            )
+            self._finish(ok, result)
+        except Exception as exc:  # pragma: no cover
             self._apply(ProgrammingUpdate(phase="failed", status=str(exc)))
             self._finish(False, str(exc))
 
@@ -1104,6 +1183,40 @@ def resolve_program_image_path(explicit_path: str | None) -> str:
     return ""
 
 
+def resolve_boot_payload_path(explicit_path: str | None) -> str:
+    if explicit_path:
+        return explicit_path
+    for candidate in BOOT_PAYLOAD_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def build_boot_payload_blob(image: bytes) -> bytes:
+    if not image:
+        raise ValueError("boot payload image is empty")
+    max_image = BOOT_PAYLOAD_SLOT_SIZE_BYTES - BOOT_PAYLOAD_HEADER.size
+    if len(image) > max_image:
+        raise ValueError(f"boot payload image {len(image)} bytes exceeds {max_image} byte max")
+    digest = hashlib.sha1(image).digest()
+    return BOOT_PAYLOAD_HEADER.pack(BOOT_PAYLOAD_HEADER_MAGIC, len(image), digest, 0) + image
+
+
+def load_boot_payload_image(source_path: str | None) -> tuple[bytes, str]:
+    path = resolve_boot_payload_path(source_path)
+    if not path:
+        raise ValueError("no boot payload image found (pass --boot-payload or build Bootloader.bin)")
+    if not os.path.isfile(path):
+        raise ValueError(f"boot payload file not found: {path}")
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if len(data) >= BOOT_PAYLOAD_HEADER.size:
+        magic, _image_length, _sha1, _reserved = BOOT_PAYLOAD_HEADER.unpack_from(data)
+        if magic == BOOT_PAYLOAD_HEADER_MAGIC:
+            return data, os.path.basename(path)
+    return build_boot_payload_blob(data), os.path.basename(path)
+
+
 def load_program_image(source_path: str | None) -> tuple[bytes, str, bool]:
     if not source_path:
         return build_stress_program_image(), "generated stress image", False
@@ -1235,6 +1348,7 @@ def stream_program_tcp(
     port: int,
     image: bytes,
     raw_storage: bool = False,
+    write_base_offset: int = 0,
     progress: Callable[[ProgrammingUpdate], None] | None = None,
 ) -> tuple[bool, str]:
     digest = hashlib.sha1(image).digest()
@@ -1255,7 +1369,11 @@ def stream_program_tcp(
                     )
                 )
             program_flags = PROG_FLAG_RAW_STORAGE if raw_storage else 0
-            sock.sendall(make_prog_frame_with_flags(PROG_FRAME_HELLO, seq, PROG_HELLO_PAYLOAD.pack(len(image), digest), program_flags))
+            if raw_storage:
+                hello_payload = PROG_HELLO_RAW_PAYLOAD.pack(len(image), digest, write_base_offset)
+            else:
+                hello_payload = PROG_HELLO_PAYLOAD.pack(len(image), digest)
+            sock.sendall(make_prog_frame_with_flags(PROG_FRAME_HELLO, seq, hello_payload, program_flags))
             ok, message, _bytes_written, _reply_seq = recv_prog_reply(sock, seq)
             if not ok:
                 return False, message
@@ -1424,30 +1542,31 @@ def wait_for_programming_ready(
     return False, "timed out waiting for programming ready"
 
 
-def run_write_program(
+def run_write_program_image(
     bind_ip: str,
     target: str,
     fallback_target: str | None,
     device: Device,
     normal_rtt_s: float,
+    image: bytes,
+    payload_name: str,
+    raw_storage: bool,
     on_response: Callable[[str, float], None] | None = None,
     progress: Callable[[ProgrammingUpdate], None] | None = None,
-    program_image_path: str | None = None,
+    write_base_offset: int = 0,
 ) -> tuple[bool, str]:
-    try:
-        image, payload_name, _is_raw = load_program_image(program_image_path)
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-        return False, f"failed to load programming image: {exc}"
     if not image:
         return False, "programming image produced no bytes"
-    if len(image) > APP_STORE_SIZE_BYTES:
-        return False, f"programming image {len(image)} bytes exceeds app slot {APP_STORE_SIZE_BYTES} bytes"
+    if write_base_offset < 0 or write_base_offset > APP_STORE_SIZE_BYTES:
+        return False, "invalid write base offset"
+    if len(image) > (APP_STORE_SIZE_BYTES - write_base_offset):
+        return False, f"programming image {len(image)} bytes exceeds remaining app store bytes"
 
     if progress is not None:
         progress(
             ProgrammingUpdate(
                 phase="loading",
-                status="raw storage image loaded" if _is_raw else "image loaded",
+                status="raw storage image loaded" if raw_storage else "image loaded",
                 payload_name=payload_name,
                 image_bytes=len(image),
                 total_blocks=max(1, (len(image) + PROGRAM_BLOCK_BYTES - 1) // PROGRAM_BLOCK_BYTES),
@@ -1543,10 +1662,107 @@ def run_write_program(
             )
         )
 
-    ok, message = stream_program_tcp(device.ip, port, image, raw_storage=_is_raw, progress=progress)
+    ok, message = stream_program_tcp(
+        device.ip,
+        port,
+        image,
+        raw_storage=raw_storage,
+        write_base_offset=write_base_offset,
+        progress=progress,
+    )
     if not ok:
         return False, message
     return True, f"{message}; state should now be {PROGRAM_STOPPED_STATE}"
+
+
+def run_write_program(
+    bind_ip: str,
+    target: str,
+    fallback_target: str | None,
+    device: Device,
+    normal_rtt_s: float,
+    on_response: Callable[[str, float], None] | None = None,
+    progress: Callable[[ProgrammingUpdate], None] | None = None,
+    program_image_path: str | None = None,
+    write_base_offset: int = 0,
+) -> tuple[bool, str]:
+    try:
+        image, payload_name, is_raw = load_program_image(program_image_path)
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        return False, f"failed to load programming image: {exc}"
+    return run_write_program_image(
+        bind_ip,
+        target,
+        fallback_target,
+        device,
+        normal_rtt_s,
+        image,
+        payload_name,
+        is_raw,
+        on_response=on_response,
+        progress=progress,
+        write_base_offset=write_base_offset,
+    )
+
+
+def run_write_boot_payload(
+    bind_ip: str,
+    target: str,
+    fallback_target: str | None,
+    device: Device,
+    normal_rtt_s: float,
+    on_response: Callable[[str, float], None] | None = None,
+    progress: Callable[[ProgrammingUpdate], None] | None = None,
+    boot_payload_path: str | None = None,
+) -> tuple[bool, str]:
+    image, payload_name = load_boot_payload_image(boot_payload_path)
+    if progress is not None:
+        progress(
+            ProgrammingUpdate(
+                phase="loading",
+                status="boot payload loaded",
+                payload_name=payload_name,
+                image_bytes=len(image),
+                total_blocks=max(1, (len(image) + PROGRAM_BLOCK_BYTES - 1) // PROGRAM_BLOCK_BYTES),
+                acked_blocks=0,
+                acked_bytes=0,
+            )
+        )
+    ok, message = run_write_program_image(
+        bind_ip,
+        target,
+        fallback_target,
+        device,
+        normal_rtt_s,
+        image,
+        payload_name,
+        True,
+        on_response=on_response,
+        progress=progress,
+        write_base_offset=BOOT_PAYLOAD_BASE_OFFSET,
+    )
+    if not ok:
+        return False, message
+    return True, f"{message}; boot payload offset 0x{BOOT_PAYLOAD_BASE_OFFSET:X}"
+
+
+def run_apply_boot_update(
+    bind_ip: str,
+    target: str,
+    fallback_target: str | None,
+    device: Device,
+    normal_rtt_s: float,
+    on_response: Callable[[str, float], None] | None = None,
+) -> tuple[bool, str]:
+    return execute_device_tree_node(
+        bind_ip,
+        target,
+        fallback_target,
+        device.uid,
+        PROGRAM_APPLY_BOOT_UPDATE_PATH,
+        normal_rtt_s=normal_rtt_s,
+        on_response=on_response,
+    )
 
 
 class DiscoveryWorker:
@@ -2345,6 +2561,7 @@ def build_programming_right_pane(snapshot: ProgrammingSnapshot, width: int) -> l
 def main() -> int:
     args = parse_args()
     program_image_path = resolve_program_image_path(args.program_image)
+    boot_payload_path = resolve_boot_payload_path(args.boot_payload)
     network_interfaces = list_network_interfaces()
     selected_interface_index = default_interface_index(network_interfaces)
     selected_interface: NetworkInterface | None = None
@@ -2796,6 +3013,39 @@ def main() -> int:
                             worker.set_enabled(False)
                         mode = "programming"
                         status_message = "starting programming workflow"
+                    elif DEVICE_MENU_ITEMS[selected_menu_index] == "Write Boot Payload":
+                        device = devices[selected_device_index]
+                        programming_worker = BootPayloadWorker(
+                            args.bind_ip,
+                            effective_control_target(device, devices),
+                            args.target,
+                            device,
+                            normal_control_rtt(device.uid),
+                            boot_payload_path,
+                        )
+                        programming_worker.start()
+                        if worker is not None:
+                            worker.set_enabled(False)
+                        mode = "programming"
+                        status_message = "starting boot payload write"
+                    elif DEVICE_MENU_ITEMS[selected_menu_index] == "Apply Boot Update":
+                        execute_started = time.monotonic()
+                        ok, message = run_apply_boot_update(
+                            args.bind_ip,
+                            effective_control_target(devices[selected_device_index], devices),
+                            args.target,
+                            devices[selected_device_index],
+                            normal_control_rtt(devices[selected_device_index].uid),
+                            on_response=lambda source_ip, elapsed_s, uid=devices[selected_device_index].uid: mark_device_seen(
+                                uid, source_ip, elapsed_s
+                            ),
+                        )
+                        execute_elapsed_ms = int((time.monotonic() - execute_started) * 1000)
+                        status_message = (
+                            f"executed Apply Boot Update: {message} ({execute_elapsed_ms} ms)"
+                            if ok
+                            else f"{message} ({execute_elapsed_ms} ms)"
+                        )
                     elif DEVICE_MENU_ITEMS[selected_menu_index] == "Reboot Device":
                         execute_started = time.monotonic()
                         ok, message = execute_device_tree_node(

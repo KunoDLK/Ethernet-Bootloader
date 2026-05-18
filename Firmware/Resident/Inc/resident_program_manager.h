@@ -14,6 +14,7 @@ typedef enum
 
 void resident_program_manager_init(void);
 int resident_program_manager_request_state(ResidentProgramState state);
+int resident_program_manager_request_apply_boot_update(void);
 ResidentProgramState resident_program_manager_state(void);
 int resident_program_manager_tcp_port(void);
 void resident_program_manager_mark_stopped(void);

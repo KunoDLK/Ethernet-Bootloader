@@ -62,11 +62,17 @@ void boot_app_manager_init(void)
   g_app_task = 0;
 }
 
-int boot_app_manager_start_if_valid(void)
+static int start_loaded_app(bool require_metadata_valid)
 {
-  if (metadata_u32_is_nonzero(BOOT_KV_APP_DISABLED) || !metadata_u32_is_nonzero(BOOT_KV_APP_VALID))
+  if (require_metadata_valid &&
+      (metadata_u32_is_nonzero(BOOT_KV_APP_DISABLED) || !metadata_u32_is_nonzero(BOOT_KV_APP_VALID)))
   {
     return -1;
+  }
+
+  if (g_app_running)
+  {
+    return 0;
   }
 
   AppImageHeader header;
@@ -107,6 +113,16 @@ int boot_app_manager_start_if_valid(void)
   g_app_running = true;
   g_app_paused = false;
   return 0;
+}
+
+int boot_app_manager_start_if_valid(void)
+{
+  return start_loaded_app(true);
+}
+
+int boot_app_manager_start_force(void)
+{
+  return start_loaded_app(false);
 }
 
 int boot_app_manager_stop(void)

@@ -92,6 +92,16 @@ bool boot_mem_is_app_store_range(uint32_t base, uint32_t length)
   return range_inside(base, length, BOOT_APP_STORE_BASE_ADDR, BOOT_APP_STORE_LIMIT_ADDR);
 }
 
+bool boot_mem_is_iap_app_slot_range(uint32_t base, uint32_t length)
+{
+  return range_inside(base, length, BOOT_IAP_APP_SLOT_BASE_ADDR, BOOT_IAP_APP_SLOT_LIMIT_ADDR);
+}
+
+bool boot_mem_is_bootloader_payload_range(uint32_t base, uint32_t length)
+{
+  return range_inside(base, length, BOOT_BOOTLOADER_PAYLOAD_BASE_ADDR, BOOT_BOOTLOADER_PAYLOAD_LIMIT_ADDR);
+}
+
 bool boot_mem_is_app_exec_range(uint32_t base, uint32_t length)
 {
   return range_inside(base, length, BOOT_APP_EXEC_BASE_ADDR, BOOT_APP_EXEC_LIMIT_ADDR);

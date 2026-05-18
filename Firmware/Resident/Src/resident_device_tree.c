@@ -30,6 +30,7 @@ extern struct netif gnetif;
 #define TREE_ID_APP                     (6U)
 #define TREE_ID_PROGRAM_STATE           (1U)
 #define TREE_ID_PROGRAM_TCP_PORT        (2U)
+#define TREE_ID_PROGRAM_APPLY_BOOT      (3U)
 #define TREE_ID_NETWORK_MAC             (1U)
 #define TREE_ID_IPV4_ADDRESS            (2U)
 #define TREE_ID_IPV4_SUBNET             (3U)
@@ -90,6 +91,9 @@ static int execute_reboot_node(const ResidentTreeNode *node, const uint8_t *loca
 static int execute_app_action_node(const ResidentTreeNode *node, const uint8_t *location,
                                    uint8_t depth, const uint8_t *args, uint16_t args_len,
                                    uint8_t *response, uint16_t response_max, uint16_t *response_len);
+static int execute_program_apply_boot_node(const ResidentTreeNode *node, const uint8_t *location,
+                                           uint8_t depth, const uint8_t *args, uint16_t args_len,
+                                           uint8_t *response, uint16_t response_max, uint16_t *response_len);
 
 static ResidentTreeAppMount g_app_mount;
 static volatile bool g_reboot_requested;
@@ -127,6 +131,10 @@ static ResidentTreeNode k_node_program_state = {
 static ResidentTreeNode k_node_program_tcp_port = {
   TREE_ID_PROGRAM_TCP_PORT, TREE_NODE_STATIC, 0, 0, 0, list_program_node, "Programming TCP port",
   TREE_ACCESS_READ, 0, "-1 until TCP programming is ready", false, 0, 0};
+static ResidentTreeNode k_node_program_apply_boot = {
+  TREE_ID_PROGRAM_APPLY_BOOT, TREE_NODE_STATIC, 0, 0, execute_program_apply_boot_node, list_program_node,
+  "Apply Boot Update", TREE_ACCESS_EXECUTE, 0,
+  "Start IAP app from sectors 6-8 to copy payload sectors 9-10 onto resident sectors 0-5", true, 0, 0};
 static ResidentTreeNode k_node_program = {
   TREE_ID_PROGRAM, TREE_NODE_STATIC, 0, &k_node_program_state, 0, list_static_node, "Program",
   TREE_ACCESS_READ, 0, 0, false, 0, 0};
@@ -239,6 +247,10 @@ static ResidentTreeRootLayout resident_device_tree_root_layout(void)
 
 static void resident_device_tree_link_static_nodes(void)
 {
+  k_node_program_state.next = &k_node_program_tcp_port;
+  k_node_program_tcp_port.next = &k_node_program_apply_boot;
+  k_node_program_apply_boot.next = 0;
+
   const ResidentTreeRootLayout layout = resident_device_tree_root_layout();
   resident_tree_root_refresh(&layout);
 }
@@ -369,6 +381,11 @@ static bool location_is_program_state(const uint8_t *location, uint8_t depth)
 static bool location_is_program_tcp_port(const uint8_t *location, uint8_t depth)
 {
   return resolve_location_node(location, depth) == &k_node_program_tcp_port;
+}
+
+static bool location_is_program_apply_boot(const uint8_t *location, uint8_t depth)
+{
+  return resolve_location_node(location, depth) == &k_node_program_apply_boot;
 }
 
 static bool location_is_app_action(const uint8_t *location, uint8_t depth)
@@ -747,6 +764,26 @@ static int execute_app_action_node(const ResidentTreeNode *node, const uint8_t *
 {
   return resident_tree_app_execute_action(&g_app_mount, node, location, depth, args, args_len,
                                           response, response_max, response_len);
+}
+
+static int execute_program_apply_boot_node(const ResidentTreeNode *node, const uint8_t *location,
+                                           uint8_t depth, const uint8_t *args, uint16_t args_len,
+                                           uint8_t *response, uint16_t response_max, uint16_t *response_len)
+{
+  (void)node;
+  (void)location;
+  (void)depth;
+  (void)args;
+  (void)args_len;
+  (void)response;
+  (void)response_max;
+  if (response_len == 0)
+  {
+    return PROTO_RESULT_PARSE;
+  }
+
+  *response_len = 0U;
+  return (resident_program_manager_request_apply_boot_update() == 0) ? PROTO_RESULT_OK : PROTO_RESULT_BUSY;
 }
 
 static void reboot_task(void *argument)
@@ -1273,6 +1310,7 @@ int resident_device_tree_execute(const uint8_t *location, uint8_t depth,
       location_is_estop(location, depth) || location_is_button(location, depth) ||
       location_is_rail_mode(location, depth) || location_is_rail_output(location, depth) ||
       location_is_program_state(location, depth) || location_is_program_tcp_port(location, depth) ||
+      location_is_program_apply_boot(location, depth) ||
       location_is_flash_current_settings_slot(location, depth) ||
       location_is_flash_bytes_used(location, depth) || location_is_flash_bytes_remaining(location, depth) ||
       location_is_flash_current_settings_phys_addr(location, depth) ||

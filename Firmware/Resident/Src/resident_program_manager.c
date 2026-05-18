@@ -2,6 +2,7 @@
 
 #include "boot_app_manager.h"
 #include "boot_flash.h"
+#include "boot_iap.h"
 #include "cmsis_os.h"
 #include "proto_common.h"
 #include "proto_program_tcp.h"
@@ -20,6 +21,7 @@ typedef enum
   PROGRAM_REQUEST_PAUSE,
   PROGRAM_REQUEST_RUN,
   PROGRAM_REQUEST_READY,
+  PROGRAM_REQUEST_APPLY_IAP,
 } ProgramRequest;
 
 static volatile ResidentProgramState g_state;
@@ -216,6 +218,23 @@ static void handle_ready_request(void)
   finish_request();
 }
 
+static void handle_apply_iap_request(void)
+{
+  (void)printf("ProgramMgr: apply boot update requested\r\n");
+  close_programming_listener();
+  (void)boot_app_manager_stop();
+  if (boot_iap_app_start() == 0)
+  {
+    set_state(RESIDENT_PROGRAM_STATE_RUNNING);
+  }
+  else
+  {
+    (void)printf("ProgramMgr: failed to start IAP app\r\n");
+    set_state(RESIDENT_PROGRAM_STATE_STOPPED);
+  }
+  finish_request();
+}
+
 static void program_worker(void *argument)
 {
   (void)argument;
@@ -238,6 +257,9 @@ static void program_worker(void *argument)
         break;
       case PROGRAM_REQUEST_READY:
         handle_ready_request();
+        break;
+      case PROGRAM_REQUEST_APPLY_IAP:
+        handle_apply_iap_request();
         break;
       case PROGRAM_REQUEST_NONE:
       default:
@@ -285,6 +307,11 @@ int resident_program_manager_request_state(ResidentProgramState state)
     default:
       return -1;
   }
+}
+
+int resident_program_manager_request_apply_boot_update(void)
+{
+  return queue_request(PROGRAM_REQUEST_APPLY_IAP, RESIDENT_PROGRAM_STATE_STOPPED);
 }
 
 ResidentProgramState resident_program_manager_state(void)

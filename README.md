@@ -215,3 +215,46 @@ The node tree must be accessible at any time via the resident server (not only d
 - Exact on-wire binary message formats (endianness, alignment, max size)
 - LAN8720 RMII clocking (PHY crystal vs MCU-provided REF_CLK) and pin mapping
 - Flash sector map and exact memory layout for resident/app/metadata
+
+## CMake build setup
+
+This repository now includes a CMake workflow for the app images:
+
+- `Firmware/Application` -> `example_app.elf/.bin/.appimg`
+- `Firmware/IapApp` -> `iap_app.elf/.bin/.appimg`
+
+### Prerequisites
+
+- CMake 3.22+
+- NMake (Visual Studio Build Tools) or another CMake generator you prefer
+- ARM GNU toolchain in `PATH`:
+  - `arm-none-eabi-gcc`
+  - `arm-none-eabi-objcopy`
+  - `arm-none-eabi-nm`
+  - `arm-none-eabi-size`
+- Python 3
+
+If the toolchain is not in `PATH`, set `ARM_GCC_ROOT` to the install root (the directory that contains `bin/arm-none-eabi-gcc`).
+
+### Configure and build
+
+From repo root:
+
+```bash
+cmake --preset arm-debug
+cmake --build --preset build-debug
+```
+
+If `NMake` is unavailable in your shell, use the VS generator preset:
+
+```bash
+cmake --preset arm-vs2022
+cmake --build --preset build-vs2022
+```
+
+Release build:
+
+```bash
+cmake --preset arm-release
+cmake --build --preset build-release
+```

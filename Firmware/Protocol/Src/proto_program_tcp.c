@@ -4,6 +4,7 @@
 #include "boot_app_manager.h"
 #include "boot_flash.h"
 #include "boot_image.h"
+#include "boot_memory_map.h"
 #include "boot_metadata.h"
 #include "cmsis_os.h"
 #include "FreeRTOS.h"
@@ -34,6 +35,13 @@ typedef struct __attribute__((packed))
   uint32_t image_size;
   uint8_t image_sha1[APP_IMAGE_SHA1_DIGEST_BYTES];
 } ProgHelloPayload;
+
+typedef struct __attribute__((packed))
+{
+  uint32_t image_size;
+  uint8_t image_sha1[APP_IMAGE_SHA1_DIGEST_BYTES];
+  uint32_t write_base_offset;
+} ProgHelloRawPayload;
 
 typedef struct __attribute__((packed))
 {
@@ -68,6 +76,7 @@ static uint16_t g_listen_port;
 static uint32_t g_expected_seq;
 static uint32_t g_bytes_written;
 static uint32_t g_expected_image_size;
+static uint32_t g_write_base_offset;
 static uint16_t g_program_flags;
 static uint8_t g_flash_programming_active;
 static uint8_t g_stop_after_final_ack;
@@ -298,7 +307,29 @@ static err_t process_program_frame(struct tcp_pcb *pcb, const ProtoProgFrameHead
         break;
       }
 
-      const ProgHelloPayload *hello = (const ProgHelloPayload *)payload;
+      ProgHelloPayload hello = {0};
+      uint32_t write_base_offset = 0U;
+      memcpy(&hello, payload, sizeof(hello));
+      if ((header->flags & PROG_FLAG_RAW_STORAGE) != 0U)
+      {
+        if (header->payload_len >= sizeof(ProgHelloRawPayload))
+        {
+          ProgHelloRawPayload raw_hello;
+          memcpy(&raw_hello, payload, sizeof(raw_hello));
+          write_base_offset = raw_hello.write_base_offset;
+        }
+
+        if ((hello.image_size == 0U) ||
+            (write_base_offset > BOOT_APP_STORE_SIZE_BYTES) ||
+            (hello.image_size > (BOOT_APP_STORE_SIZE_BYTES - write_base_offset)) ||
+            !boot_mem_is_app_store_range(BOOT_APP_STORE_BASE_ADDR + write_base_offset,
+                                         hello.image_size))
+        {
+          (void)send_nack(pcb, header->seq, -2, 3U);
+          break;
+        }
+      }
+
       if (boot_flash_begin_app_storage_programming() != 0)
       {
         (void)send_nack(pcb, header->seq, -5, 1U);
@@ -306,8 +337,9 @@ static err_t process_program_frame(struct tcp_pcb *pcb, const ProtoProgFrameHead
       }
 
       g_flash_programming_active = 1U;
-      g_expected_image_size = hello->image_size;
+      g_expected_image_size = hello.image_size;
       g_bytes_written = 0U;
+      g_write_base_offset = write_base_offset;
       g_program_flags = header->flags;
       (void)send_ack(pcb, header->seq);
       g_expected_seq++;
@@ -330,7 +362,8 @@ static err_t process_program_frame(struct tcp_pcb *pcb, const ProtoProgFrameHead
         break;
       }
 
-      if (boot_flash_write_app_storage(g_bytes_written, data->data, data->data_len) != 0)
+      if (boot_flash_write_app_storage(g_write_base_offset + g_bytes_written, data->data,
+                                       data->data_len) != 0)
       {
         (void)send_nack(pcb, header->seq, -5, 0U);
         break;
@@ -512,6 +545,7 @@ static err_t program_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
   g_expected_seq = 0U;
   g_bytes_written = 0U;
   g_expected_image_size = 0U;
+  g_write_base_offset = 0U;
   g_program_flags = 0U;
   g_flash_programming_active = 0U;
   g_rx_buffer_len = 0U;

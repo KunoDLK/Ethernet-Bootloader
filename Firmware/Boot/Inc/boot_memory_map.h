@@ -16,6 +16,14 @@
 #define BOOT_APP_STORE_SIZE_BYTES     (640UL * 1024UL)
 #define BOOT_APP_STORE_LIMIT_ADDR     (BOOT_APP_STORE_BASE_ADDR + BOOT_APP_STORE_SIZE_BYTES)
 
+#define BOOT_IAP_APP_SLOT_BASE_ADDR       (0x08040000UL) /* sectors 6-8 */
+#define BOOT_IAP_APP_SLOT_SIZE_BYTES      (384UL * 1024UL)
+#define BOOT_IAP_APP_SLOT_LIMIT_ADDR      (BOOT_IAP_APP_SLOT_BASE_ADDR + BOOT_IAP_APP_SLOT_SIZE_BYTES)
+
+#define BOOT_BOOTLOADER_PAYLOAD_BASE_ADDR  (0x080A0000UL) /* sectors 9-10 */
+#define BOOT_BOOTLOADER_PAYLOAD_SIZE_BYTES (256UL * 1024UL)
+#define BOOT_BOOTLOADER_PAYLOAD_LIMIT_ADDR (BOOT_BOOTLOADER_PAYLOAD_BASE_ADDR + BOOT_BOOTLOADER_PAYLOAD_SIZE_BYTES)
+
 #define BOOT_METADATA_BASE_ADDR       (0x080E0000UL)
 #define BOOT_METADATA_SIZE_BYTES      (128UL * 1024UL)
 #define BOOT_METADATA_LIMIT_ADDR      (BOOT_METADATA_BASE_ADDR + BOOT_METADATA_SIZE_BYTES)
@@ -42,6 +50,8 @@ uint32_t boot_mem_metadata_limit(void);
 bool boot_mem_range_is_valid(uint32_t base, uint32_t length);
 bool boot_mem_is_resident_range(uint32_t base, uint32_t length);
 bool boot_mem_is_app_store_range(uint32_t base, uint32_t length);
+bool boot_mem_is_iap_app_slot_range(uint32_t base, uint32_t length);
+bool boot_mem_is_bootloader_payload_range(uint32_t base, uint32_t length);
 bool boot_mem_is_app_exec_range(uint32_t base, uint32_t length);
 bool boot_mem_is_metadata_range(uint32_t base, uint32_t length);
 bool boot_mem_addr_is_app_exec(uint32_t address);
