@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ctypes
 import errno
 import ipaddress
@@ -19,10 +20,12 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 from dataclasses import dataclass, replace
 from typing import Callable
 
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PROTO_MAGIC = 0x424C4452
 PROTO_VERSION = 1
 PROTO_MSG_DISCOVER_REQ = 0x01
@@ -45,6 +48,32 @@ PASSIVE_TREE_TIMEOUT_S = 0.1
 DEFAULT_CONTROL_RTT_S = 0.01
 MIN_CONTROL_RETRY_S = 0.002
 MAX_CONTROL_RETRY_S = 0.5
+DUMMY_HEX_PATH = os.path.join(os.path.dirname(__file__), "dummy_app.hex")
+PROGRAM_IMAGE_CANDIDATES = [
+    os.path.join(PROJECT_ROOT, "Firmware", "Debug", "Bootloader.bin"),
+    os.path.join(PROJECT_ROOT, "Firmware", "Debug", "Bootloader.hex"),
+    os.path.join(PROJECT_ROOT, "Firmware", "Debug", "Bootloader.elf"),
+]
+PROGRAM_STATE_PATH = [2, 1]
+PROGRAM_TCP_PORT_PATH = [2, 2]
+PROGRAM_READY_STATE = "ProgrammingReady"
+PROGRAM_ERASING_STATE = "Erasing"
+PROGRAM_STOPPED_STATE = "Stopped"
+PROGRAM_BLOCK_BYTES = 1024
+PROGRAM_WINDOW_FRAMES = 4
+PROGRAM_BLOCK_MAX_RETRIES = 3
+PROGRAM_TCP_TIMEOUT_S = 3.0
+PROGRAM_READY_TIMEOUT_S = 30.0
+APP_STORE_SIZE_BYTES = 640 * 1024
+APP_IMAGE_MAGIC = 0x41505031
+APP_IMAGE_ABI_VERSION = 1
+APP_IMAGE_SHA1_DIGEST_BYTES = 20
+APP_IMAGE_DIGEST_SHA1 = 1
+APP_IMAGE_FLAG_VALID = 1 << 0
+APP_EXEC_BASE = 0x10000000
+APP_EXEC_SIZE = 64 * 1024
+APP_IMAGE_HEADER_FORMAT = "<IHHIIIIIIIIIB3s20s"
+APP_IMAGE_HEADER_SIZE = struct.calcsize(APP_IMAGE_HEADER_FORMAT)
 
 ACCESS_READ = 0x8
 ACCESS_WRITE = 0x4
@@ -58,7 +87,7 @@ DEVICE_TREE_OP_PAGING = 0x80
 DEVICE_TREE_OP_GET = 0x02
 DEVICE_TREE_OP_SET = 0x03
 DEVICE_TREE_OP_EXECUTE = 0x04
-STANDARD_REBOOT_PATH = [2]
+STANDARD_REBOOT_PATH = [5]
 # Device tree locations (see Firmware/Resident/Src/resident_device_tree.c TREE_ID_*).
 IPV4_ADDRESS_PATH = [1, 2]
 IPV4_SUBNET_PATH = [1, 3]
@@ -69,6 +98,20 @@ DEVICE_MENU_ITEMS = [
     "Write Program",
     "Reboot Device",
 ]
+
+PROG_FRAME_HELLO = 0x01
+PROG_FRAME_DATA = 0x02
+PROG_FRAME_FINISH = 0x03
+PROG_FRAME_ABORT = 0x04
+PROG_FRAME_ACK = 0x81
+PROG_FRAME_NACK = 0x82
+PROG_FLAG_RAW_STORAGE = 1 << 1
+PROG_HEADER = struct.Struct("<IBBHIHH")
+PROG_HELLO_PAYLOAD = struct.Struct("<I20s")
+PROG_DATA_LEN = struct.Struct("<H")
+PROG_FINISH_PAYLOAD = struct.Struct("<I20s")
+PROG_ACK_PAYLOAD = struct.Struct("<II")
+PROG_NACK_PAYLOAD = struct.Struct("<IhH")
 
 
 @dataclass
@@ -109,6 +152,36 @@ class NetworkInterface:
     gateway: str
 
 
+@dataclass
+class ProgrammingUpdate:
+    phase: str | None = None
+    status: str | None = None
+    payload_name: str | None = None
+    image_bytes: int | None = None
+    total_blocks: int | None = None
+    sent_blocks: int | None = None
+    in_flight_blocks: int | None = None
+    acked_blocks: int | None = None
+    acked_bytes: int | None = None
+
+
+@dataclass
+class ProgrammingSnapshot:
+    active: bool = False
+    phase: str = "idle"
+    status: str = ""
+    payload_name: str = ""
+    image_bytes: int = 0
+    total_blocks: int = 0
+    sent_blocks: int = 0
+    in_flight_blocks: int = 0
+    acked_blocks: int = 0
+    acked_bytes: int = 0
+    finished: bool = False
+    success: bool = False
+    result: str = ""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Interactive CLI for the resident bootloader.")
     parser.add_argument(
@@ -127,6 +200,14 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_REFRESH_S,
         help="seconds between automatic discovery requests",
+    )
+    parser.add_argument(
+        "--program-image",
+        default=None,
+        help=(
+            "programming payload to stream; defaults to a packaged bootloader artifact "
+            "when available, otherwise a generated large stress image"
+        ),
     )
     return parser.parse_args()
 
@@ -413,6 +494,98 @@ def format_rtt(seconds: float | None) -> str:
     if seconds < 1:
         return f"{seconds * 1000:.1f}ms"
     return f"{seconds:.3f}s"
+
+
+def progress_bar(completed: int, total: int, width: int = 24) -> str:
+    width = max(4, width)
+    if total <= 0:
+        return "[" + "." * width + "]"
+    ratio = max(0.0, min(1.0, completed / total))
+    filled = int(round(ratio * width))
+    filled = max(0, min(width, filled))
+    return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+
+def progress_line(label: str, completed: int, total: int, width: int, suffix: str = "") -> str:
+    pct = 0 if total <= 0 else int(round((completed / total) * 100))
+    detail = f" {completed}/{total} ({pct:3d}%)"
+    if visible_len(detail) + 1 >= width:
+        return truncate(detail.strip(), width).rstrip()
+
+    min_bar = progress_bar(completed, total, 4)
+    label_width = min(14, max(0, width - visible_len(detail) - visible_len(min_bar) - 4))
+    line_label = label if visible_len(label) <= label_width else label[: max(0, label_width - 1)] + "~"
+    prefix = f" {line_label:<{label_width}}: " if label_width > 0 else " "
+    bar_width = max(4, width - visible_len(prefix) - visible_len(detail) - 2)
+    bar = progress_bar(completed, total, bar_width)
+    suffix_budget = width - visible_len(prefix) - visible_len(bar) - visible_len(detail)
+    suffix_text = f" {suffix}"[:suffix_budget] if suffix_budget > 1 and suffix else ""
+    return f"{prefix}{bar}{detail}{suffix_text}".rstrip()
+
+
+class ProgrammingWorker:
+    def __init__(
+        self,
+        bind_ip: str,
+        target: str,
+        fallback_target: str | None,
+        device: Device,
+        normal_rtt_s: float,
+        program_image_path: str | None,
+    ) -> None:
+        self.bind_ip = bind_ip
+        self.target = target
+        self.fallback_target = fallback_target
+        self.device = device
+        self.normal_rtt_s = normal_rtt_s
+        self.program_image_path = program_image_path
+        self._lock = threading.Lock()
+        self._snapshot = ProgrammingSnapshot(active=True)
+        self._thread = threading.Thread(target=self._run, name="Programming", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def snapshot(self) -> ProgrammingSnapshot:
+        with self._lock:
+            return replace(self._snapshot)
+
+    def _apply(self, update: ProgrammingUpdate) -> None:
+        with self._lock:
+            apply_programming_update(self._snapshot, update)
+
+    def _finish(self, success: bool, result: str) -> None:
+        with self._lock:
+            self._snapshot.finished = True
+            self._snapshot.success = success
+            self._snapshot.result = result
+            self._snapshot.active = False
+            if success:
+                self._snapshot.phase = "done"
+            elif self._snapshot.phase in ("idle", "loading", "erasing", "ready", "connecting", "programming", "finalizing"):
+                self._snapshot.phase = "failed"
+            if not self._snapshot.status:
+                self._snapshot.status = result
+
+    def _run(self) -> None:
+        try:
+            ok, result = run_write_program(
+                self.bind_ip,
+                self.target,
+                self.fallback_target,
+                self.device,
+                self.normal_rtt_s,
+                on_response=lambda source_ip, elapsed_s, uid=self.device.uid: None,
+                progress=self._apply,
+                program_image_path=self.program_image_path,
+            )
+            self._finish(ok, result)
+        except Exception as exc:  # pragma: no cover - safety net for UI thread
+            self._apply(ProgrammingUpdate(phase="failed", status=str(exc)))
+            self._finish(False, str(exc))
 
 
 def metadata_string(metadata: dict, *keys: str) -> str:
@@ -845,6 +1018,537 @@ def get_device_tree_value(
     return True, response[2 : 2 + value_len].decode("utf-8", errors="replace"), "ok"
 
 
+def load_intel_hex(path: str) -> bytes:
+    segments: dict[int, int] = {}
+    upper = 0
+    min_addr: int | None = None
+    max_addr = 0
+    with open(path, "r", encoding="ascii") as handle:
+        for line_no, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if not line.startswith(":"):
+                raise ValueError(f"line {line_no}: missing ':'")
+            record = bytes.fromhex(line[1:])
+            if len(record) < 5:
+                raise ValueError(f"line {line_no}: short record")
+            length = record[0]
+            address = (record[1] << 8) | record[2]
+            record_type = record[3]
+            data = record[4 : 4 + length]
+            checksum = sum(record) & 0xFF
+            if checksum != 0:
+                raise ValueError(f"line {line_no}: bad checksum")
+            if record_type == 0x00:
+                absolute = upper + address
+                for offset, byte in enumerate(data):
+                    segments[absolute + offset] = byte
+                min_addr = absolute if min_addr is None else min(min_addr, absolute)
+                max_addr = max(max_addr, absolute + len(data))
+            elif record_type == 0x01:
+                break
+            elif record_type == 0x04:
+                if length != 2:
+                    raise ValueError(f"line {line_no}: bad extended linear address")
+                upper = ((data[0] << 8) | data[1]) << 16
+            else:
+                continue
+
+    if min_addr is None:
+        return b""
+    return bytes(segments.get(address, 0xFF) for address in range(min_addr, max_addr))
+
+
+def pack_app_image(payload: bytes, *, version: int = 1, entry_offset: int = 0, stop_offset: int = 0,
+                   bss_offset: int | None = None, bss_size: int = 0) -> bytes:
+    digest = hashlib.sha1(payload).digest()
+    if bss_offset is None:
+        bss_offset = len(payload)
+    header = struct.pack(
+        APP_IMAGE_HEADER_FORMAT,
+        APP_IMAGE_MAGIC,
+        APP_IMAGE_HEADER_SIZE,
+        APP_IMAGE_ABI_VERSION,
+        len(payload),
+        APP_EXEC_BASE,
+        APP_EXEC_SIZE,
+        entry_offset,
+        stop_offset,
+        bss_offset,
+        bss_size,
+        version,
+        APP_IMAGE_FLAG_VALID,
+        APP_IMAGE_DIGEST_SHA1,
+        b"\x00\x00\x00",
+        digest,
+    )
+    return header + payload
+
+
+def build_stress_program_image() -> bytes:
+    payload_len = 60 * 1024
+    pattern = bytes(range(256))
+    payload = (pattern * ((payload_len + len(pattern) - 1) // len(pattern)))[:payload_len]
+    return pack_app_image(payload)
+
+
+def resolve_program_image_path(explicit_path: str | None) -> str:
+    if explicit_path:
+        return explicit_path
+
+    for candidate in PROGRAM_IMAGE_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+
+    return ""
+
+
+def load_program_image(source_path: str | None) -> tuple[bytes, str, bool]:
+    if not source_path:
+        return build_stress_program_image(), "generated stress image", False
+
+    if not os.path.isfile(source_path):
+        return build_stress_program_image(), "generated stress image", False
+
+    ext = os.path.splitext(source_path)[1].lower()
+    if ext == ".hex":
+        return load_intel_hex(source_path), os.path.basename(source_path), False
+    if ext == ".bin":
+        with open(source_path, "rb") as handle:
+            return handle.read(), os.path.basename(source_path), True
+    if ext == ".elf":
+        objcopy = shutil.which("arm-none-eabi-objcopy") or shutil.which("objcopy")
+        nm = shutil.which("arm-none-eabi-nm") or shutil.which("nm")
+        if objcopy is None or nm is None:
+            raise ValueError("ELF packaging requires arm-none-eabi-objcopy and arm-none-eabi-nm")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_bin = os.path.join(temp_dir, "payload.bin")
+            subprocess.run([objcopy, "-O", "binary", source_path, temp_bin], check=True, capture_output=True)
+            symbols = read_symbols(nm, source_path)
+            app_start = symbols.get("app_start")
+            if app_start is None:
+                return build_stress_program_image(), "generated stress image", False
+            app_stop = symbols.get("app_stop", 0)
+            bss_start = symbols.get("__app_bss_start__", APP_EXEC_BASE)
+            bss_end = symbols.get("__app_bss_end__", bss_start)
+            with open(temp_bin, "rb") as handle:
+                payload = handle.read()
+            return (
+                pack_app_image(
+                    payload,
+                    entry_offset=app_start - APP_EXEC_BASE,
+                    stop_offset=(app_stop - APP_EXEC_BASE) if app_stop else 0,
+                    bss_offset=bss_start - APP_EXEC_BASE,
+                    bss_size=bss_end - bss_start,
+                ),
+                os.path.basename(source_path),
+                False,
+            )
+
+    raise ValueError(f"unsupported program image format: {source_path}")
+
+
+def read_symbols(nm: str, elf: str) -> dict[str, int]:
+    output = subprocess.check_output([nm, "-g", elf], text=True)
+    symbols: dict[str, int] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) == 3:
+            symbols[parts[2]] = int(parts[0], 16)
+    return symbols
+
+
+def make_prog_frame(frame_type: int, seq: int, payload: bytes) -> bytes:
+    return make_prog_frame_with_flags(frame_type, seq, payload, 0)
+
+
+def make_prog_frame_with_flags(frame_type: int, seq: int, payload: bytes, flags: int) -> bytes:
+    return PROG_HEADER.pack(
+        PROTO_MAGIC,
+        PROTO_VERSION,
+        frame_type,
+        flags,
+        seq,
+        len(payload),
+        0,
+    ) + payload
+
+
+def recv_exact(sock: socket.socket, length: int) -> bytes:
+    data = bytearray()
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
+        if not chunk:
+            raise ConnectionError("TCP connection closed")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def recv_prog_reply(sock: socket.socket, expected_seq: int | None = None) -> tuple[bool, str, int, int]:
+    header_bytes = recv_exact(sock, PROG_HEADER.size)
+    magic, version, frame_type, flags, seq, payload_len, _reserved = PROG_HEADER.unpack(header_bytes)
+    payload = recv_exact(sock, payload_len)
+    if magic != PROTO_MAGIC or version != PROTO_VERSION or (expected_seq is not None and seq != expected_seq):
+        return False, "invalid TCP reply header", 0, seq
+    if (flags & PROTO_FLAG_REPLY) == 0:
+        return False, "TCP reply missing reply flag", 0, seq
+    if frame_type == PROG_FRAME_ACK:
+        if len(payload) < PROG_ACK_PAYLOAD.size:
+            return False, "short ACK payload", 0, seq
+        ack_seq, bytes_written = PROG_ACK_PAYLOAD.unpack_from(payload)
+        if expected_seq is not None and ack_seq != expected_seq:
+            return False, f"ACK sequence mismatch {ack_seq}", bytes_written, seq
+        return True, "ack", bytes_written, ack_seq
+    if frame_type == PROG_FRAME_NACK:
+        if len(payload) < PROG_NACK_PAYLOAD.size:
+            return False, "short NACK payload", 0, seq
+        nack_seq, error_code, detail = PROG_NACK_PAYLOAD.unpack_from(payload)
+        return False, f"NACK seq {nack_seq} error {error_code} detail {detail}", 0, nack_seq
+    return False, f"unexpected TCP frame 0x{frame_type:02x}", 0, seq
+
+
+def apply_programming_update(snapshot: ProgrammingSnapshot, update: ProgrammingUpdate) -> None:
+    if update.phase is not None:
+        snapshot.phase = update.phase
+    if update.status is not None:
+        snapshot.status = update.status
+    if update.payload_name is not None:
+        snapshot.payload_name = update.payload_name
+    if update.image_bytes is not None:
+        snapshot.image_bytes = update.image_bytes
+    if update.total_blocks is not None:
+        snapshot.total_blocks = update.total_blocks
+    if update.sent_blocks is not None:
+        snapshot.sent_blocks = update.sent_blocks
+    if update.in_flight_blocks is not None:
+        snapshot.in_flight_blocks = update.in_flight_blocks
+    if update.acked_blocks is not None:
+        snapshot.acked_blocks = update.acked_blocks
+    if update.acked_bytes is not None:
+        snapshot.acked_bytes = update.acked_bytes
+
+
+def stream_program_tcp(
+    host: str,
+    port: int,
+    image: bytes,
+    raw_storage: bool = False,
+    progress: Callable[[ProgrammingUpdate], None] | None = None,
+) -> tuple[bool, str]:
+    digest = hashlib.sha1(image).digest()
+    seq = 0
+    try:
+        with socket.create_connection((host, port), timeout=PROGRAM_TCP_TIMEOUT_S) as sock:
+            sock.settimeout(PROGRAM_TCP_TIMEOUT_S)
+            total_blocks = max(1, (len(image) + PROGRAM_BLOCK_BYTES - 1) // PROGRAM_BLOCK_BYTES)
+            if progress is not None:
+                progress(
+                    ProgrammingUpdate(
+                        phase="programming",
+                        image_bytes=len(image),
+                        total_blocks=total_blocks,
+                        acked_blocks=0,
+                        acked_bytes=0,
+                        status="connected, sending HELLO",
+                    )
+                )
+            program_flags = PROG_FLAG_RAW_STORAGE if raw_storage else 0
+            sock.sendall(make_prog_frame_with_flags(PROG_FRAME_HELLO, seq, PROG_HELLO_PAYLOAD.pack(len(image), digest), program_flags))
+            ok, message, _bytes_written, _reply_seq = recv_prog_reply(sock, seq)
+            if not ok:
+                return False, message
+            seq += 1
+
+            blocks = [image[offset : offset + PROGRAM_BLOCK_BYTES] for offset in range(0, len(image), PROGRAM_BLOCK_BYTES)]
+            next_block = 0
+            acked_blocks = 0
+            bytes_written = 0
+            in_flight: dict[int, tuple[int, bytes, int]] = {}
+            seq_to_block: dict[int, int] = {}
+
+            while acked_blocks < len(blocks):
+                while next_block < len(blocks) and len(in_flight) < PROGRAM_WINDOW_FRAMES:
+                    block = blocks[next_block]
+                    payload = PROG_DATA_LEN.pack(len(block)) + block
+                    frame = make_prog_frame(PROG_FRAME_DATA, seq, payload)
+                    sock.sendall(frame)
+                    in_flight[seq] = (next_block, frame, 1)
+                    seq_to_block[seq] = next_block
+                    next_block += 1
+                    seq += 1
+
+                if progress is not None:
+                    progress(
+                        ProgrammingUpdate(
+                            phase="programming",
+                            status=f"sent {next_block}/{total_blocks}, waiting for ACKs",
+                            image_bytes=len(image),
+                            total_blocks=total_blocks,
+                            sent_blocks=next_block,
+                            in_flight_blocks=len(in_flight),
+                            acked_blocks=acked_blocks,
+                            acked_bytes=bytes_written,
+                        )
+                    )
+
+                ok, message, reply_bytes_written, reply_seq = recv_prog_reply(sock, None)
+                block_entry = in_flight.get(reply_seq)
+                if block_entry is None:
+                    return False, f"{message}; unexpected reply seq {reply_seq}"
+
+                block_index, frame, attempts = block_entry
+                if ok:
+                    in_flight.pop(reply_seq, None)
+                    bytes_written = reply_bytes_written
+                    acked_blocks += 1
+                    if progress is not None:
+                        progress(
+                            ProgrammingUpdate(
+                                phase="programming",
+                                status=f"ack {acked_blocks}/{total_blocks}",
+                                image_bytes=len(image),
+                                total_blocks=total_blocks,
+                                sent_blocks=next_block,
+                                in_flight_blocks=len(in_flight),
+                                acked_blocks=acked_blocks,
+                                acked_bytes=bytes_written,
+                            )
+                        )
+                    continue
+
+                if "NACK" not in message:
+                    return False, message
+
+                if attempts >= PROGRAM_BLOCK_MAX_RETRIES:
+                    return False, f"{message}; giving up on block {block_index + 1}"
+
+                sock.sendall(frame)
+                in_flight[reply_seq] = (block_index, frame, attempts + 1)
+                if progress is not None:
+                    progress(
+                        ProgrammingUpdate(
+                            phase="programming",
+                            status=f"{message}; retransmitting block {block_index + 1}",
+                            image_bytes=len(image),
+                            total_blocks=total_blocks,
+                            sent_blocks=next_block,
+                            in_flight_blocks=len(in_flight),
+                            acked_blocks=acked_blocks,
+                            acked_bytes=bytes_written,
+                        )
+                    )
+
+            if progress is not None:
+                progress(
+                    ProgrammingUpdate(
+                        phase="finalizing",
+                        status="sending FINISH",
+                        image_bytes=len(image),
+                        total_blocks=total_blocks,
+                        sent_blocks=next_block,
+                        in_flight_blocks=0,
+                        acked_blocks=acked_blocks,
+                        acked_bytes=bytes_written,
+                    )
+                )
+            sock.sendall(make_prog_frame_with_flags(PROG_FRAME_FINISH, seq, PROG_FINISH_PAYLOAD.pack(len(image), digest), program_flags))
+            ok, message, bytes_written, _reply_seq = recv_prog_reply(sock, seq)
+            if not ok:
+                return False, message
+            return True, f"programmed {bytes_written} bytes"
+    except (OSError, ConnectionError, TimeoutError) as exc:
+        return False, f"TCP programming failed: {exc}"
+
+
+def wait_for_programming_port(
+    bind_ip: str,
+    target: str,
+    fallback_target: str | None,
+    device: Device,
+    normal_rtt_s: float,
+    on_response: Callable[[str, float], None] | None = None,
+) -> tuple[bool, int, str]:
+    deadline = time.monotonic() + PROGRAM_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        ok, value, message = get_device_tree_value(
+            bind_ip,
+            target,
+            fallback_target,
+            device.uid,
+            PROGRAM_TCP_PORT_PATH,
+            timeout_s=DEFAULT_REQUEST_TIMEOUT_S,
+            normal_rtt_s=normal_rtt_s,
+            on_response=on_response,
+        )
+        if ok:
+            try:
+                port = int(value)
+            except ValueError:
+                return False, -1, f"invalid programming port {value!r}"
+            if port > 0:
+                return True, port, "ok"
+        elif message != "request timed out":
+            return False, -1, message
+        time.sleep(0.25)
+    return False, -1, "timed out waiting for programming TCP port"
+
+
+def wait_for_programming_ready(
+    bind_ip: str,
+    target: str,
+    fallback_target: str | None,
+    device: Device,
+    normal_rtt_s: float,
+    on_response: Callable[[str, float], None] | None = None,
+) -> tuple[bool, str]:
+    deadline = time.monotonic() + PROGRAM_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        ok, value, message = get_device_tree_value(
+            bind_ip,
+            target,
+            fallback_target,
+            device.uid,
+            PROGRAM_STATE_PATH,
+            timeout_s=DEFAULT_REQUEST_TIMEOUT_S,
+            normal_rtt_s=normal_rtt_s,
+            on_response=on_response,
+        )
+        if ok:
+            if value == PROGRAM_READY_STATE:
+                return True, "ok"
+        elif message != "request timed out":
+            return False, message
+        time.sleep(0.25)
+    return False, "timed out waiting for programming ready"
+
+
+def run_write_program(
+    bind_ip: str,
+    target: str,
+    fallback_target: str | None,
+    device: Device,
+    normal_rtt_s: float,
+    on_response: Callable[[str, float], None] | None = None,
+    progress: Callable[[ProgrammingUpdate], None] | None = None,
+    program_image_path: str | None = None,
+) -> tuple[bool, str]:
+    try:
+        image, payload_name, _is_raw = load_program_image(program_image_path)
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        return False, f"failed to load programming image: {exc}"
+    if not image:
+        return False, "programming image produced no bytes"
+    if len(image) > APP_STORE_SIZE_BYTES:
+        return False, f"programming image {len(image)} bytes exceeds app slot {APP_STORE_SIZE_BYTES} bytes"
+
+    if progress is not None:
+        progress(
+            ProgrammingUpdate(
+                phase="loading",
+                status="raw storage image loaded" if _is_raw else "image loaded",
+                payload_name=payload_name,
+                image_bytes=len(image),
+                total_blocks=max(1, (len(image) + PROGRAM_BLOCK_BYTES - 1) // PROGRAM_BLOCK_BYTES),
+                acked_blocks=0,
+                acked_bytes=0,
+            )
+        )
+
+    skip_erase = False
+    state_ok, current_state, _state_message = get_device_tree_value(
+        bind_ip,
+        target,
+        fallback_target,
+        device.uid,
+        PROGRAM_STATE_PATH,
+        timeout_s=DEFAULT_REQUEST_TIMEOUT_S,
+        normal_rtt_s=normal_rtt_s,
+        on_response=on_response,
+    )
+    if state_ok and current_state == PROGRAM_READY_STATE:
+        skip_erase = True
+        if progress is not None:
+            progress(
+                ProgrammingUpdate(
+                    phase="ready",
+                    status="already programming ready, skipping erase",
+                    payload_name=payload_name,
+                    image_bytes=len(image),
+                )
+            )
+
+    if not skip_erase:
+        ok, message, _reboot_required = set_device_tree_value(
+            bind_ip,
+            target,
+            fallback_target,
+            device.uid,
+            PROGRAM_STATE_PATH,
+            PROGRAM_ERASING_STATE,
+            timeout_s=PROGRAM_READY_TIMEOUT_S,
+            normal_rtt_s=normal_rtt_s,
+            on_response=on_response,
+        )
+        if not ok:
+            return False, f"failed to enter programming mode: {message}"
+        if progress is not None:
+            progress(
+                ProgrammingUpdate(
+                    phase="erasing",
+                    status="erase queued, waiting for programming ready",
+                    payload_name=payload_name,
+                    image_bytes=len(image),
+                )
+            )
+
+    ok, message = wait_for_programming_ready(
+        bind_ip,
+        target,
+        fallback_target,
+        device,
+        normal_rtt_s,
+        on_response=on_response,
+    )
+    if not ok:
+        return False, message
+    if progress is not None:
+        progress(
+            ProgrammingUpdate(
+                phase="ready",
+                status="programming ready, waiting for TCP port",
+                payload_name=payload_name,
+                image_bytes=len(image),
+            )
+        )
+
+    ok, port, message = wait_for_programming_port(
+        bind_ip,
+        target,
+        fallback_target,
+        device,
+        normal_rtt_s,
+        on_response=on_response,
+    )
+    if not ok:
+        return False, message
+    if progress is not None:
+        progress(
+            ProgrammingUpdate(
+                phase="connecting",
+                status=f"connecting to TCP port {port}",
+                payload_name=payload_name,
+                image_bytes=len(image),
+            )
+        )
+
+    ok, message = stream_program_tcp(device.ip, port, image, raw_storage=_is_raw, progress=progress)
+    if not ok:
+        return False, message
+    return True, f"{message}; state should now be {PROGRAM_STOPPED_STATE}"
+
+
 class DiscoveryWorker:
     def __init__(self, bind_ip: str, target: str, port: int, refresh_s: float) -> None:
         self.bind_ip = bind_ip
@@ -1070,6 +1774,7 @@ def build_screen(
     port: int,
     error: str,
     control_rtt_by_uid: dict[bytes, float],
+    programming_snapshot: ProgrammingSnapshot | None,
 ) -> str:
     size = shutil.get_terminal_size((100, 30))
     cols = max(size.columns, 60)
@@ -1085,6 +1790,8 @@ def build_screen(
         title = " Bootloader CLI - Network"
     elif mode == "discovery":
         title = " Bootloader CLI - Discovery"
+    elif mode == "programming":
+        title = " Bootloader CLI - Programming"
     else:
         title = " Bootloader CLI - Device"
     lines.append(truncate(title, cols))
@@ -1112,6 +1819,12 @@ def build_screen(
             " Up/Down: select device   Enter: open device"
             "   R: refresh discovery   Q: quit"
         )
+    elif mode == "programming":
+        device = devices[selected_device_index] if devices else None
+        snapshot = programming_snapshot or ProgrammingSnapshot(active=True, phase="loading", status="starting")
+        left_content = build_programming_left_pane(device, snapshot, left_w)
+        right_content = build_programming_right_pane(snapshot, right_w)
+        bindings = " Q: quit   programming runs in background"
     else:
         device = devices[selected_device_index] if devices else None
         if mode in ("raw_tree", "edit_leaf"):
@@ -1527,13 +2240,17 @@ def build_device_menu_right_pane(
             [
                 " Firmware programming workflow.",
                 "",
-                " Intended flow:",
-                " * unlock programming if required",
-                " * start programming mode",
-                " * stream application image over TCP",
-                " * finalize and verify",
+                " Press Enter to start a background",
+                " programming job with live progress bars.",
                 "",
-                " Not wired to firmware yet.",
+                " Flow:",
+                " * set Program/State to Erasing over UDP",
+                " * poll Program/Programming TCP port",
+                " * stream MSS-sized TCP DATA blocks",
+                " * finalize and leave state Stopped",
+                "",
+                " Payload          : bootloader artifact or",
+                "                    generated stress image",
             ]
         )
     elif selected_item == "Reboot Device":
@@ -1553,12 +2270,86 @@ def build_device_menu_right_pane(
     return lines
 
 
+def build_programming_left_pane(device: Device | None, snapshot: ProgrammingSnapshot, width: int) -> list[str]:
+    lines = [build_left_header("Programming", 0, width), ""]
+    if device is None:
+        lines.append(" Selected device is no longer visible.")
+        return lines
+
+    lines.extend(
+        [
+            f" {style_data(device.ip)}",
+            f" {style_data(format_mac(device.mac))}",
+            "",
+            f" Payload          : {style_data(snapshot.payload_name or 'loading...')}",
+            f" Phase            : {style_data(snapshot.phase)}",
+            "",
+            " The transfer runs in the background",
+            " so the progress bars can repaint live.",
+        ]
+    )
+    return lines
+
+
+def build_programming_right_pane(snapshot: ProgrammingSnapshot, width: int) -> list[str]:
+    lines = [
+        " Programming progress",
+        "",
+        f" Status           : {style_data(snapshot.status or 'working...')}",
+        f" Image size       : {style_data(str(snapshot.image_bytes or 0))} bytes",
+        "",
+        progress_line("Erase", 1 if snapshot.phase in ("ready", "connecting", "programming", "finalizing", "done") else 0, 1, width, "phase"),
+        progress_line(
+            "Sent blocks",
+            snapshot.sent_blocks,
+            max(snapshot.total_blocks, 1),
+            width,
+            "queued to TCP",
+        ),
+        progress_line(
+            "In flight",
+            snapshot.in_flight_blocks,
+            PROGRAM_WINDOW_FRAMES,
+            width,
+            "window",
+        ),
+        progress_line(
+            "ACK packets",
+            snapshot.acked_blocks,
+            max(snapshot.total_blocks, 1),
+            width,
+            "received blocks",
+        ),
+        progress_line(
+            "Bytes written",
+            snapshot.acked_bytes,
+            max(snapshot.image_bytes, 1),
+            width,
+            "payload bytes",
+        ),
+        "",
+    ]
+
+    if snapshot.finished:
+        lines.append(f" Result           : {style_data(snapshot.result or ('ok' if snapshot.success else 'failed'))}")
+    else:
+        lines.append(" Waiting for final reply...")
+
+    if width < 60:
+        lines.append("")
+        lines.append(" Widen terminal for easier reading.")
+
+    return lines
+
+
 def main() -> int:
     args = parse_args()
+    program_image_path = resolve_program_image_path(args.program_image)
     network_interfaces = list_network_interfaces()
     selected_interface_index = default_interface_index(network_interfaces)
     selected_interface: NetworkInterface | None = None
     worker: DiscoveryWorker | None = None
+    programming_worker: ProgrammingWorker | None = None
     mode = "interface_select"
     if args.bind_ip:
         selected_interface = interface_for_bind_ip(args.bind_ip, network_interfaces)
@@ -1671,6 +2462,18 @@ def main() -> int:
         with Terminal() as terminal, KeyReader() as keys:
             while True:
                 devices, error = worker.snapshot() if worker is not None else ([], "")
+                programming_snapshot = programming_worker.snapshot() if programming_worker is not None else None
+                if programming_worker is not None and programming_snapshot.finished:
+                    status_message = (
+                        programming_snapshot.result
+                        if programming_snapshot.success
+                        else f"programming failed: {programming_snapshot.result}"
+                    )
+                    if worker is not None:
+                        worker.set_enabled(True)
+                    programming_worker = None
+                    mode = "device_menu" if devices else "discovery"
+                    programming_snapshot = None
                 if selected_device_index >= len(devices):
                     selected_device_index = max(0, len(devices) - 1)
                 if mode not in ("discovery", "interface_select") and not devices:
@@ -1724,12 +2527,16 @@ def main() -> int:
                         port=args.port,
                         error=error,
                         control_rtt_by_uid=control_rtt_by_uid,
+                        programming_snapshot=programming_snapshot,
                     )
                 )
 
                 key = keys.read_key()
                 if key in ("q", "\x03"):
                     break
+                if mode == "programming":
+                    time.sleep(0.05)
+                    continue
 
                 if mode == "interface_select":
                     if key == "up" and network_interfaces:
@@ -1974,6 +2781,21 @@ def main() -> int:
                         tree_value = ""
                         load_tree_node(devices[selected_device_index], devices)
                         mode = "raw_tree"
+                    elif DEVICE_MENU_ITEMS[selected_menu_index] == "Write Program":
+                        device = devices[selected_device_index]
+                        programming_worker = ProgrammingWorker(
+                            args.bind_ip,
+                            effective_control_target(device, devices),
+                            args.target,
+                            device,
+                            normal_control_rtt(device.uid),
+                            program_image_path,
+                        )
+                        programming_worker.start()
+                        if worker is not None:
+                            worker.set_enabled(False)
+                        mode = "programming"
+                        status_message = "starting programming workflow"
                     elif DEVICE_MENU_ITEMS[selected_menu_index] == "Reboot Device":
                         execute_started = time.monotonic()
                         ok, message = execute_device_tree_node(

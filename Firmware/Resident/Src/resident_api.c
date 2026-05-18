@@ -6,6 +6,7 @@
 #include "resident_hardware.h"
 #include "resident_network.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static AppApi g_app_api;
@@ -43,7 +44,10 @@ static uint32_t api_uptime_ms(void)
 
 static void api_log_write(const char *message)
 {
-  (void)message;
+  if (message != 0)
+  {
+    (void)printf("App: %s\r\n", message);
+  }
 }
 
 static int api_storage_read(const char *key, void *data, size_t max_length, size_t *length)

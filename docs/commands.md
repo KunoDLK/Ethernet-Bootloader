@@ -5,7 +5,7 @@
 Provide a broadcast-safe discovery mechanism plus a **unicast** control plane for:
 
 - device tree access (LIST/GET/SET/EXECUTE/UNLOCK/LOCK)
-- entry into programming mode
+- entry into programming mode through device-tree writes
 - status queries
 
 ## Transport
@@ -52,8 +52,6 @@ All multi-byte fields are little-endian.
 | 0x13       | `BCAST_UID_REPLY`  | wrapper for broadcast-transport replies                     |
 | 0x20       | `DEVICETREE_REQ`   | carries op + node location + value                          |
 | 0x21       | `DEVICETREE_REPLY` | carries result + data                                       |
-| 0x30       | `PROG_BEGIN_REQ`   | request programming mode (requires device-tree unlock)      |
-| 0x31       | `PROG_BEGIN_REPLY` | returns TCP port                                            |
 | 0x40       | `PING_REQ`         | liveness                                                    |
 | 0x41       | `PING_REPLY`       | liveness                                                    |
 | 0x7F       | `ERROR_REPLY`      | generic error when parsing fails                            |
@@ -69,7 +67,7 @@ These message types allow transporting any existing request/reply over broadcast
 | Field            | Size | Type  | Notes                                               |
 | ---------------- | ---- | ----- | --------------------------------------------------- |
 | `target_uid`     | 12   | bytes | STM32 UID as advertised in discovery                |
-| `inner_msg_type` | 1    | u8    | e.g. `DEVICETREE_REQ`, `PING_REQ`, `PROG_BEGIN_REQ` |
+| `inner_msg_type` | 1    | u8    | e.g. `DEVICETREE_REQ`, `PING_REQ` |
 | `inner_len`      | 2    | u16   | bytes of `inner_payload`                            |
 | `inner_payload`  | N    | bytes | exact payload of the inner request                  |
 
@@ -99,6 +97,14 @@ This protocol assumes operation on a trusted/private network. Privileged functio
 - A node (and its descendants) may be **locked**.
 - Host must `UNLOCK(path, password)` before it can `SET` or `EXECUTE` on protected nodes.
 - Device may re-lock automatically after a short timeout (recommended).
+
+## Programming entry
+
+Programming entry is device-tree-only. The host writes `Program/State = Erasing`, then polls `Program/Programming TCP port` until it is not `-1`. Bulk image bytes are then sent over the reported TCP port in framed `PROG_DATA` messages. The current host may keep a small window of sequential frames in flight, while the firmware reassembles the TCP byte stream and ACKs each accepted frame by sequence number.
+
+The host must preflight the programming image size against the application storage slot before requesting erase. On the current flash map the application storage slot is 640 KiB starting at `0x08040000`.
+
+For transport and staging tests, the host may set the programming stream raw-storage flag when sending a `.bin` payload such as the 256 KiB bootloader binary. Raw-storage writes still erase and program the app storage area, but they skip app-image validation and are not marked as runnable applications.
 
 ## Error model
 

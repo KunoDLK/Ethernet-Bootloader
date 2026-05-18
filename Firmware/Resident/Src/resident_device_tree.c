@@ -4,6 +4,7 @@
 #include "cmsis_os.h"
 #include "lwip/netif.h"
 #include "proto_common.h"
+#include "resident_program_manager.h"
 #include "resident_tree_core.h"
 #include "resident_tree_types.h"
 #include "resident_tree_network.h"
@@ -22,10 +23,13 @@
 extern struct netif gnetif;
 
 #define TREE_ID_NETWORK                 (1U)
-#define TREE_ID_REBOOT                  (2U)
-#define TREE_ID_APP                     (3U)
-#define TREE_ID_HARDWARE                (4U)
-#define TREE_ID_DEBUG                   (5U)
+#define TREE_ID_PROGRAM                 (2U)
+#define TREE_ID_HARDWARE                (3U)
+#define TREE_ID_DEBUG                   (4U)
+#define TREE_ID_REBOOT                  (5U)
+#define TREE_ID_APP                     (6U)
+#define TREE_ID_PROGRAM_STATE           (1U)
+#define TREE_ID_PROGRAM_TCP_PORT        (2U)
 #define TREE_ID_NETWORK_MAC             (1U)
 #define TREE_ID_IPV4_ADDRESS            (2U)
 #define TREE_ID_IPV4_SUBNET             (3U)
@@ -56,6 +60,7 @@ extern struct netif gnetif;
 #define TREE_APP_ACTION_MAX             (8U)
 #define TREE_RAIL_MODE_ENUM_JSON        "\"Enabled\",\"Disabled\",\"Follow Estop\""
 #define TREE_NET_DHCP_ENUM_JSON         "\"Disabled\",\"Enabled\""
+#define TREE_PROGRAM_STATE_ENUM_JSON    "\"Erasing\",\"ProgrammingReady\",\"Stopped\",\"Paused\",\"Running\""
 
 static bool list_static_node(const ResidentTreeNode *node, const uint8_t *parent_location,
                              ResidentTreeListItem *item);
@@ -77,6 +82,8 @@ static bool list_app_action_node(const ResidentTreeNode *node, const uint8_t *pa
                                  ResidentTreeListItem *item);
 static bool list_flash_kv_node(const ResidentTreeNode *node, const uint8_t *parent_location,
                                ResidentTreeListItem *item);
+static bool list_program_node(const ResidentTreeNode *node, const uint8_t *parent_location,
+                              ResidentTreeListItem *item);
 static int execute_reboot_node(const ResidentTreeNode *node, const uint8_t *location,
                                uint8_t depth, const uint8_t *args, uint16_t args_len,
                                uint8_t *response, uint16_t response_max, uint16_t *response_len);
@@ -112,6 +119,16 @@ static ResidentTreeNode k_node_ipv4_dhcp = {
   TREE_WRITE_EFFECT_REBOOT, "DHCP preference (applied after reboot)", false, 0, TREE_NET_DHCP_ENUM_JSON};
 static ResidentTreeNode k_node_network = {
   TREE_ID_NETWORK, TREE_NODE_STATIC, 0, &k_node_network_mac, 0, list_static_node, "Network",
+  TREE_ACCESS_READ, 0, 0, false, 0, 0};
+
+static ResidentTreeNode k_node_program_state = {
+  TREE_ID_PROGRAM_STATE, TREE_NODE_STATIC, 0, 0, 0, list_program_node, "State",
+  TREE_ACCESS_READ_WRITE, 0, "Program lifecycle state", false, 0, TREE_PROGRAM_STATE_ENUM_JSON};
+static ResidentTreeNode k_node_program_tcp_port = {
+  TREE_ID_PROGRAM_TCP_PORT, TREE_NODE_STATIC, 0, 0, 0, list_program_node, "Programming TCP port",
+  TREE_ACCESS_READ, 0, "-1 until TCP programming is ready", false, 0, 0};
+static ResidentTreeNode k_node_program = {
+  TREE_ID_PROGRAM, TREE_NODE_STATIC, 0, &k_node_program_state, 0, list_static_node, "Program",
   TREE_ACCESS_READ, 0, 0, false, 0, 0};
 
 static ResidentTreeNode k_node_hardware_cpu_temp = {
@@ -175,20 +192,24 @@ static ResidentTreeNode k_node_reboot = {
   TREE_ID_REBOOT, TREE_NODE_STATIC, 0, 0, execute_reboot_node, list_static_node, "Reboot",
   TREE_ACCESS_EXECUTE, 0, "Reset the device after replying", true, 0, 0};
 static ResidentTreeNode g_app_root_node = {
-  TREE_ID_APP, TREE_NODE_STATIC, 0, 0, 0, list_app_root_node, 0, TREE_ACCESS_READ, 0, 0, false, 0, 0};
+  TREE_ID_APP, TREE_NODE_STATIC, 0, 0, 0, list_app_root_node, "App", TREE_ACCESS_READ, 0, 0, false, 0, 0};
 
 static void rebuild_app_action_nodes(void);
 static void rebuild_flash_kv_nodes(void);
+static const char *program_state_text(ResidentProgramState state);
 
 static ResidentTreeRootLayout resident_device_tree_root_layout(void)
 {
   ResidentTreeRootLayout layout;
   memset(&layout, 0, sizeof(layout));
   layout.network = &k_node_network;
+  layout.program = &k_node_program;
   layout.hardware = &k_node_hardware;
   layout.debug = &k_node_debug;
   layout.reboot = &k_node_reboot;
   layout.app_root = &g_app_root_node;
+  layout.program_state = &k_node_program_state;
+  layout.program_tcp_port = &k_node_program_tcp_port;
   layout.network_mac = &k_node_network_mac;
   layout.ipv4_address = &k_node_ipv4_address;
   layout.ipv4_subnet = &k_node_ipv4_subnet;
@@ -338,6 +359,16 @@ static bool location_is_root(const uint8_t *location, uint8_t depth)
 static bool location_is_reboot(const uint8_t *location, uint8_t depth)
 {
   return resolve_location_node(location, depth) == &k_node_reboot;
+}
+
+static bool location_is_program_state(const uint8_t *location, uint8_t depth)
+{
+  return resolve_location_node(location, depth) == &k_node_program_state;
+}
+
+static bool location_is_program_tcp_port(const uint8_t *location, uint8_t depth)
+{
+  return resolve_location_node(location, depth) == &k_node_program_tcp_port;
 }
 
 static bool location_is_app_action(const uint8_t *location, uint8_t depth)
@@ -527,7 +558,7 @@ static bool list_flash_stat_node(const ResidentTreeNode *node, const uint8_t *pa
 static bool list_app_root_node(const ResidentTreeNode *node, const uint8_t *parent_location,
                                ResidentTreeListItem *item)
 {
-  return resident_tree_app_list_root(&g_app_mount, node, parent_location, item);
+  return list_static_node(node, parent_location, item);
 }
 
 static bool list_app_action_node(const ResidentTreeNode *node, const uint8_t *parent_location,
@@ -540,6 +571,81 @@ static bool list_flash_kv_node(const ResidentTreeNode *node, const uint8_t *pare
                                ResidentTreeListItem *item)
 {
   return resident_tree_debug_list_flash_kv(node, parent_location, item);
+}
+
+static const char *program_state_text(ResidentProgramState state)
+{
+  switch (state)
+  {
+    case RESIDENT_PROGRAM_STATE_ERASING:
+      return "Erasing";
+    case RESIDENT_PROGRAM_STATE_PROGRAMMING_READY:
+      return "ProgrammingReady";
+    case RESIDENT_PROGRAM_STATE_STOPPED:
+      return "Stopped";
+    case RESIDENT_PROGRAM_STATE_PAUSED:
+      return "Paused";
+    case RESIDENT_PROGRAM_STATE_RUNNING:
+      return "Running";
+    default:
+      return "Stopped";
+  }
+}
+
+static bool parse_program_state(const uint8_t *value, uint16_t value_len, ResidentProgramState *state)
+{
+  if ((value == 0) || (state == 0))
+  {
+    return false;
+  }
+
+  const struct
+  {
+    const char *name;
+    ResidentProgramState state;
+  } states[] = {
+    {"Erasing", RESIDENT_PROGRAM_STATE_ERASING},
+    {"ProgrammingReady", RESIDENT_PROGRAM_STATE_PROGRAMMING_READY},
+    {"Stopped", RESIDENT_PROGRAM_STATE_STOPPED},
+    {"Paused", RESIDENT_PROGRAM_STATE_PAUSED},
+    {"Running", RESIDENT_PROGRAM_STATE_RUNNING},
+  };
+
+  for (uint8_t i = 0U; i < (uint8_t)(sizeof(states) / sizeof(states[0])); i++)
+  {
+    const size_t name_len = strlen(states[i].name);
+    if ((value_len == name_len) && (memcmp(value, states[i].name, name_len) == 0))
+    {
+      *state = states[i].state;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static bool list_program_node(const ResidentTreeNode *node, const uint8_t *parent_location,
+                              ResidentTreeListItem *item)
+{
+  (void)parent_location;
+
+  if ((node == 0) || (item == 0))
+  {
+    return false;
+  }
+
+  populate_static_list_item(node, item);
+  if (node == &k_node_program_state)
+  {
+    item->value = program_state_text(resident_program_manager_state());
+  }
+  else if (node == &k_node_program_tcp_port)
+  {
+    (void)snprintf(g_list_value_text[0], sizeof(g_list_value_text[0]), "%d",
+                   resident_program_manager_tcp_port());
+    item->value = g_list_value_text[0];
+  }
+  return true;
 }
 
 static bool location_is_ipv4_leaf(const uint8_t *location, uint8_t depth)
@@ -612,7 +718,6 @@ static bool app_action_name_is_valid(const char *path)
 
   return true;
 }
-
 
 static int execute_reboot_node(const ResidentTreeNode *node, const uint8_t *location,
                                uint8_t depth, const uint8_t *args, uint16_t args_len,
@@ -912,6 +1017,14 @@ int resident_device_tree_get(const uint8_t *location, uint8_t depth,
     (void)raw_key;
     resident_text_bytes_to_hex(raw_kv_value, raw_len, value, sizeof(value));
   }
+  else if (location_is_program_state(location, depth))
+  {
+    (void)snprintf(value, sizeof(value), "%s", program_state_text(resident_program_manager_state()));
+  }
+  else if (location_is_program_tcp_port(location, depth))
+  {
+    (void)snprintf(value, sizeof(value), "%d", resident_program_manager_tcp_port());
+  }
   else if (location_is_reboot(location, depth) || location_is_app_action(location, depth))
   {
     return PROTO_RESULT_INVALID_VALUE;
@@ -1055,6 +1168,27 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
 
   if (!location_is_ipv4_leaf(location, depth))
   {
+    if (location_is_program_state(location, depth))
+    {
+      ResidentProgramState requested_state;
+      if (!parse_program_state(value, value_len, &requested_state))
+      {
+        return PROTO_RESULT_INVALID_VALUE;
+      }
+
+      if (resident_program_manager_request_state(requested_state) != 0)
+      {
+        return PROTO_RESULT_BUSY;
+      }
+      if (response_max < 1U)
+      {
+        return PROTO_RESULT_GENERIC;
+      }
+      response[0] = 0U;
+      *response_len = 1U;
+      return PROTO_RESULT_OK;
+    }
+
     if (location_is_reboot(location, depth) || location_is_app_action(location, depth) ||
         location_is_cpu_temp(location, depth) || location_is_estop(location, depth) ||
         location_is_button(location, depth) || location_is_rail_output(location, depth) ||
@@ -1063,7 +1197,8 @@ int resident_device_tree_set(const uint8_t *location, uint8_t depth,
         location_is_flash_bytes_remaining(location, depth) ||
         location_is_flash_current_settings_phys_addr(location, depth) ||
         location_is_flash_current_settings_object_size(location, depth) ||
-        location_is_flash_stored_kv(location, depth))
+        location_is_flash_stored_kv(location, depth) ||
+        location_is_program_tcp_port(location, depth))
     {
       return PROTO_RESULT_INVALID_VALUE;
     }
@@ -1137,6 +1272,7 @@ int resident_device_tree_execute(const uint8_t *location, uint8_t depth,
       location_is_cpu_temp(location, depth) || location_is_hardware_poll_period(location, depth) ||
       location_is_estop(location, depth) || location_is_button(location, depth) ||
       location_is_rail_mode(location, depth) || location_is_rail_output(location, depth) ||
+      location_is_program_state(location, depth) || location_is_program_tcp_port(location, depth) ||
       location_is_flash_current_settings_slot(location, depth) ||
       location_is_flash_bytes_used(location, depth) || location_is_flash_bytes_remaining(location, depth) ||
       location_is_flash_current_settings_phys_addr(location, depth) ||

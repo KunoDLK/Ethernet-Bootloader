@@ -10,10 +10,13 @@
 typedef struct
 {
   ResidentTreeNode *network;
+  ResidentTreeNode *program;
   ResidentTreeNode *hardware;
   ResidentTreeNode *debug;
   ResidentTreeNode *reboot;
   ResidentTreeNode *app_root;
+  ResidentTreeNode *program_state;
+  ResidentTreeNode *program_tcp_port;
   ResidentTreeNode *network_mac;
   ResidentTreeNode *ipv4_address;
   ResidentTreeNode *ipv4_subnet;

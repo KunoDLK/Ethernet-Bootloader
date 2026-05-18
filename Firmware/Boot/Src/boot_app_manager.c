@@ -4,11 +4,38 @@
 #include "app_image.h"
 #include "boot_image.h"
 #include "boot_metadata.h"
+#include "cmsis_os.h"
 #include "resident_api.h"
 #include "resident_device_tree.h"
 
 static bool g_app_running;
+static bool g_app_paused;
 static AppStopFn g_app_stop;
+static AppEntryPoint g_app_entry;
+static StaticTask_t g_app_task_cb;
+static StackType_t g_app_task_stack[512];
+static osThreadId_t g_app_task;
+
+static void app_task(void *argument)
+{
+  (void)argument;
+
+  const AppApi *api = resident_api_get();
+  if ((g_app_entry == 0) || (api == 0) || (g_app_entry(api) != 0))
+  {
+    g_app_running = false;
+    g_app_paused = false;
+    g_app_task = 0;
+    g_app_stop = 0;
+    g_app_entry = 0;
+    osThreadExit();
+  }
+
+  for (;;)
+  {
+    osDelay(1000U);
+  }
+}
 
 static uint32_t read_u32_le(const uint8_t *value)
 {
@@ -29,7 +56,10 @@ static bool metadata_u32_is_nonzero(uint32_t key)
 void boot_app_manager_init(void)
 {
   g_app_running = false;
+  g_app_paused = false;
   g_app_stop = 0;
+  g_app_entry = 0;
+  g_app_task = 0;
 }
 
 int boot_app_manager_start_if_valid(void)
@@ -50,22 +80,32 @@ int boot_app_manager_start_if_valid(void)
     return -1;
   }
 
-  AppEntryPoint entry = (AppEntryPoint)boot_image_entry_address(&header);
-  if (entry == 0)
+  g_app_entry = (AppEntryPoint)boot_image_entry_address(&header);
+  if (g_app_entry == 0)
   {
     return -1;
   }
 
   g_app_stop = (AppStopFn)boot_image_stop_address(&header);
 
-  const AppApi *api = resident_api_get();
-  if (entry(api) != 0)
+  const osThreadAttr_t task_attr = {
+    .name = "LoadedApp",
+    .cb_mem = &g_app_task_cb,
+    .cb_size = sizeof(g_app_task_cb),
+    .stack_mem = g_app_task_stack,
+    .stack_size = sizeof(g_app_task_stack),
+    .priority = osPriorityNormal,
+  };
+
+  g_app_task = osThreadNew(app_task, 0, &task_attr);
+  if (g_app_task == 0)
   {
     g_app_stop = 0;
+    g_app_entry = 0;
     return -1;
   }
-
   g_app_running = true;
+  g_app_paused = false;
   return 0;
 }
 
@@ -82,12 +122,60 @@ int boot_app_manager_stop(void)
   }
 
   resident_device_tree_unmount_all_app();
+  if (g_app_task != 0)
+  {
+    (void)osThreadTerminate(g_app_task);
+  }
   g_app_running = false;
+  g_app_paused = false;
   g_app_stop = 0;
+  g_app_entry = 0;
+  g_app_task = 0;
+  return 0;
+}
+
+int boot_app_manager_pause(void)
+{
+  if (!g_app_running || (g_app_task == 0))
+  {
+    return -1;
+  }
+  if (g_app_paused)
+  {
+    return 0;
+  }
+  if (osThreadSuspend(g_app_task) != osOK)
+  {
+    return -1;
+  }
+  g_app_paused = true;
+  return 0;
+}
+
+int boot_app_manager_resume(void)
+{
+  if (!g_app_running || (g_app_task == 0))
+  {
+    return boot_app_manager_start_if_valid();
+  }
+  if (!g_app_paused)
+  {
+    return 0;
+  }
+  if (osThreadResume(g_app_task) != osOK)
+  {
+    return -1;
+  }
+  g_app_paused = false;
   return 0;
 }
 
 bool boot_app_manager_is_running(void)
 {
   return g_app_running;
+}
+
+bool boot_app_manager_is_paused(void)
+{
+  return g_app_paused;
 }

@@ -12,9 +12,13 @@ static void link_static_nodes(const ResidentTreeRootLayout *layout)
     return;
   }
 
-  if ((layout->network != 0) && (layout->hardware != 0))
+  if ((layout->network != 0) && (layout->program != 0))
   {
-    layout->network->next = layout->hardware;
+    layout->network->next = layout->program;
+  }
+  if ((layout->program != 0) && (layout->hardware != 0))
+  {
+    layout->program->next = layout->hardware;
   }
   if ((layout->hardware != 0) && (layout->debug != 0))
   {
@@ -26,7 +30,24 @@ static void link_static_nodes(const ResidentTreeRootLayout *layout)
   }
   if (layout->reboot != 0)
   {
-    layout->reboot->next = (layout->app_mounted && (layout->app_root != 0)) ? layout->app_root : 0;
+    layout->reboot->next = (layout->app_root != 0) ? layout->app_root : 0;
+  }
+  if (layout->app_root != 0)
+  {
+    layout->app_root->next = 0;
+  }
+
+  if ((layout->program_state != 0) && (layout->program_tcp_port != 0))
+  {
+    layout->program_state->next = layout->program_tcp_port;
+  }
+  if (layout->program_tcp_port != 0)
+  {
+    layout->program_tcp_port->next = 0;
+  }
+  if (layout->program != 0)
+  {
+    layout->program->child = layout->program_state;
   }
 
   if ((layout->network_mac != 0) && (layout->ipv4_dhcp != 0))
@@ -107,7 +128,6 @@ static void link_static_nodes(const ResidentTreeRootLayout *layout)
 
   if (layout->app_root != 0)
   {
-    layout->app_root->next = 0;
     layout->app_root->child = (layout->app_mounted && (layout->app_action_count != 0U))
                                 ? layout->app_action_nodes : 0;
   }

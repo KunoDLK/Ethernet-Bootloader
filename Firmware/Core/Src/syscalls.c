@@ -34,10 +34,6 @@
 
 
 /* Variables */
-extern int __io_putchar(int ch) __attribute__((weak));
-extern int __io_getchar(void) __attribute__((weak));
-
-
 char *__env[1] = { 0 };
 char **environ = __env;
 
@@ -45,35 +41,6 @@ char **environ = __env;
 /* Functions */
 void initialise_monitor_handles()
 {
-}
-
-static int swo_putchar(int ch)
-{
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-
-  if (((ITM->TCR & ITM_TCR_ITMENA_Msk) != 0UL) &&
-      ((ITM->TER & 1UL) != 0UL))
-  {
-    ITM_SendChar((uint32_t)ch);
-  }
-
-  return ch;
-}
-
-void printChar(char ch)
-{
-  (void)swo_putchar((int)ch);
-}
-
-int __io_putchar(int ch)
-{
-  return swo_putchar(ch);
-}
-
-int fputc(int ch, FILE *stream)
-{
-  (void)stream;
-  return swo_putchar(ch);
 }
 
 int _getpid(void)
@@ -98,26 +65,9 @@ void _exit (int status)
 __attribute__((weak)) int _read(int file, char *ptr, int len)
 {
   (void)file;
-  int DataIdx;
-
-  for (DataIdx = 0; DataIdx < len; DataIdx++)
-  {
-    *ptr++ = __io_getchar();
-  }
-
-  return len;
-}
-
-__attribute__((weak)) int _write(int file, char *ptr, int len)
-{
-  (void)file;
-  int DataIdx;
-
-  for (DataIdx = 0; DataIdx < len; DataIdx++)
-  {
-    __io_putchar(*ptr++);
-  }
-  return len;
+  (void)ptr;
+  (void)len;
+  return 0;
 }
 
 int _close(int file)

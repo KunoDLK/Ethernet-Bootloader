@@ -20,12 +20,6 @@ typedef struct __attribute__((packed))
 
 typedef struct __attribute__((packed))
 {
-  uint16_t prog_port;
-  uint16_t reserved;
-} ProgBeginReplyPayload;
-
-typedef struct __attribute__((packed))
-{
   int16_t result;
   uint16_t detail;
 } ErrorReplyPayload;
@@ -358,30 +352,6 @@ static ProtoMessageType build_command_reply(ProtoMessageType request_type,
       memcpy(reply_payload, &payload, sizeof(payload));
       *reply_payload_len = sizeof(payload);
       return PROTO_MSG_PING_REPLY;
-    }
-
-    case PROTO_MSG_PROG_BEGIN_REQ:
-    {
-      ProgBeginReplyPayload payload;
-      if (!resident_security_programming_is_unlocked())
-      {
-        (void)build_error_payload(reply_payload, reply_payload_max, PROTO_RESULT_LOCKED, 0U,
-                                  reply_payload_len);
-        return PROTO_MSG_ERROR_REPLY;
-      }
-
-      if (reply_payload_max < sizeof(payload))
-      {
-        (void)build_error_payload(reply_payload, reply_payload_max, PROTO_RESULT_GENERIC, 0U,
-                                  reply_payload_len);
-        return PROTO_MSG_ERROR_REPLY;
-      }
-
-      payload.prog_port = PROG_PORT;
-      payload.reserved = 0U;
-      memcpy(reply_payload, &payload, sizeof(payload));
-      *reply_payload_len = sizeof(payload);
-      return PROTO_MSG_PROG_BEGIN_REPLY;
     }
 
     case PROTO_MSG_DEVICETREE_REQ:

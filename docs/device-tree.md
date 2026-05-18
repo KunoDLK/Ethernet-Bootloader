@@ -4,8 +4,8 @@
 
 The resident firmware exposes a unified hierarchical **device tree** of nodes.
 
-- resident-defined subtrees: `device/*`, `net/*`, `fw/*`, `boot/*`, ...
-- application subtree: `app/*` (mounted by app via resident API)
+- resident-defined subtrees: `Network/*`, `Program/*`, `Hardware/*`, `Debug/*`, `Reboot`, ...
+- application subtree: `App/*` (mounted by app via resident API)
 
 Human-readable docs may describe paths like `net/ip` or `boot/reboot`, but packets address nodes by compact **node location bytes**.
 
@@ -58,14 +58,25 @@ Nodes may be marked **password protected**.
 
 ## Application / program-specific nodes
 
-Program-specific nodes are owned by the currently running main program and are typically mounted under `app/*`.
+Program-specific nodes are owned by the currently running main program and are mounted under `App/*`.
 
-- The resident firmware owns core nodes such as `device/*`, `net/*`, `fw/*`, `boot/*`, and programming-control nodes.
+- The resident firmware owns core nodes such as `Network/*`, `Program/*`, `Hardware/*`, `Debug/*`, `Reboot`, and `App`.
 - The main program registers its own nodes when it starts.
 - When entering programming mode, the resident firmware shuts down/deactivates the main program and removes program-specific nodes from the device tree.
 - While programming mode is active, only resident-owned nodes are exposed.
 - When the main program starts again, it adds its program-specific nodes again.
 - Program-specific nodes start at their default values unless the program restores persisted values itself.
+
+## Programming control nodes
+
+`Program` is a resident-owned top-level node with:
+
+- `State`: read/write enum with values `Erasing`, `ProgrammingReady`, `Stopped`, `Paused`, `Running`.
+- `Programming TCP port`: read-only integer. It is `-1` unless `State` is `ProgrammingReady`, then it is the active TCP listener port.
+
+Writing `Program/State = Erasing` queues asynchronous work on the resident programming worker and returns to the UDP caller immediately. The worker stops the loaded program, erases the app flash sector range, opens the TCP programming listener, and transitions to `ProgrammingReady`. Successful programming currently leaves the device in `Stopped`.
+
+`App` is always present as a top-level mount point. Loaded program nodes appear beneath it only while a program is mounted.
 
 ## Operations
 

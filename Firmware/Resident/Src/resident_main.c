@@ -12,6 +12,7 @@
 #include "resident_hardware.h"
 #include "resident_led.h"
 #include "resident_network.h"
+#include "resident_program_manager.h"
 #include "resident_security.h"
 
 #include <stdio.h>
@@ -65,12 +66,15 @@ void resident_main_task(void *argument)
 {
   (void)argument;
 
+  (void)printf("Resident: bootloader task start\r\n");
   (void)resident_led_set_status(APP_LED_STATUS_0, APP_LED_COLOR_RED, APP_LED_MODE_STATIC, 0U);
   if (boot_metadata_initialize() != 0)
   {
+    (void)printf("Resident: metadata invalid, applying defaults\r\n");
     resident_apply_default_settings();
   }
   boot_app_manager_init();
+  resident_program_manager_init();
   resident_network_init();
   resident_device_tree_init();
   resident_hardware_init();
@@ -79,11 +83,21 @@ void resident_main_task(void *argument)
   resident_api_init();
 
   MX_LWIP_Init();
+  (void)printf("Resident: lwIP initialized\r\n");
 
   (void)proto_discovery_udp_start();
   (void)proto_control_udp_start();
-  (void)proto_program_tcp_start();
-  (void)boot_app_manager_start_if_valid();
+  (void)printf("Resident: UDP services started\r\n");
+  if (boot_app_manager_start_if_valid() == 0)
+  {
+    (void)printf("Resident: valid app found, entering running state\r\n");
+    (void)resident_program_manager_request_state(RESIDENT_PROGRAM_STATE_RUNNING);
+  }
+  else
+  {
+    (void)printf("Resident: no valid app, entering programming ready state\r\n");
+    resident_program_manager_mark_programming_ready();
+  }
   (void)resident_led_set_status(APP_LED_STATUS_0, APP_LED_COLOR_GREEN, APP_LED_MODE_BLINK, 1000U);
 
   for (;;)

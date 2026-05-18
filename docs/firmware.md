@@ -141,20 +141,20 @@ Refactor `StartDefaultTask()` into a resident supervisor:
 
 - Initialize settings/metadata.
 - Load network config from device tree instead of hardcoded values in `MX_LWIP_Init()`.
-- Start UDP discovery, UDP control, and TCP programming services.
-- Build resident device-tree nodes: `device/*`, `net/*`, `fw/*`, `boot/*`, `prog/*`.
+- Start UDP discovery and UDP control services; start TCP programming only when `Program/State` is `ProgrammingReady`.
+- Build resident device-tree nodes: `Network/*`, `Program/*`, `Hardware/*`, `Debug/*`, `Reboot`, and `App/*`.
 - Validate and start the app if metadata says the app is valid.
 - Monitor lock timeouts, app health, link status, and update state.
 
 ## Programming Flow
 Implement update code in phases:
 
-- `PROG_BEGIN_REQ` requires unlock of the protected `prog/*` subtree.
-- Resident stops the app and removes `app/*` nodes.
-- TCP programming writes chunks of at most 1000 firmware bytes to the app region only.
+- Host writes `Program/State = Erasing` over the UDP device-tree protocol.
+- Resident stops the app and removes `App/*` nodes.
+- TCP programming writes chunks of at most 1024 firmware bytes to the app region only.
 - HASH peripheral SHA-1 verifies the final image. Keep the digest algorithm explicit in the app header so the ABI can reject unsupported images.
 - Metadata valid marker is written only after verification succeeds.
-- Resident restarts app or reboots, depending on a protocol flag.
+- Resident leaves `Program/State = Stopped` after a successful programming session for now.
 
 ## Build Structure
 Use two linker scripts and two build targets:

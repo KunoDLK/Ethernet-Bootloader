@@ -91,6 +91,32 @@ void StartDefaultTask(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void SWO_Init(void)
+{
+  /* Enable trace and route ITM/SWO out through the debugger. */
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+
+  /* Unlock ITM on parts that implement the lock register. */
+  ITM->LAR = 0xC5ACCE55UL;
+
+  /* Select async SWO; the debugger launch config handles the capture rate. */
+  TPI->SPPR = 2U;
+
+  ITM->TCR = ITM_TCR_ITMENA_Msk | ITM_TCR_SWOENA_Msk;
+  ITM->TER = 1U;
+}
+
+int _write(int file, char *ptr, int len)
+{
+  (void)file;
+
+  for (int i = 0; i < len; i++)
+  {
+    ITM_SendChar((uint32_t)(*ptr++));
+  }
+
+  return len;
+}
 
 /* USER CODE END 0 */
 
@@ -117,7 +143,10 @@ int main(void)
   /* Configure the system clock */
   SystemClock_Config();
 
+  SWO_Init();
+
   /* USER CODE BEGIN SysInit */
+  printf("SWV: printf retarget online\r\n");
 
   /* USER CODE END SysInit */
 

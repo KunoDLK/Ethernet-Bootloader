@@ -2,6 +2,7 @@
 #define RESIDENT_DEVICE_TREE_H
 
 #include "app_api.h"
+#include "resident_program_manager.h"
 
 #include <stdbool.h>
 #include <stdint.h>

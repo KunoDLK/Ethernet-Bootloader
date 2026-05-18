@@ -7,7 +7,6 @@
 #define PROTO_VERSION                   (1U)
 #define DISCOVERY_PORT                  (45000U)
 #define CONTROL_PORT                    (45001U)
-#define PROG_PORT                       (45002U)
 
 #define PROTO_FLAG_REPLY                (1U << 0)
 
@@ -19,8 +18,6 @@ typedef enum
   PROTO_MSG_BCAST_UID_REPLY = 0x13,
   PROTO_MSG_DEVICETREE_REQ = 0x20,
   PROTO_MSG_DEVICETREE_REPLY = 0x21,
-  PROTO_MSG_PROG_BEGIN_REQ = 0x30,
-  PROTO_MSG_PROG_BEGIN_REPLY = 0x31,
   PROTO_MSG_PING_REQ = 0x40,
   PROTO_MSG_PING_REPLY = 0x41,
   PROTO_MSG_ERROR_REPLY = 0x7F,
