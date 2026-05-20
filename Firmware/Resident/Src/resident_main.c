@@ -88,9 +88,13 @@ void resident_main_task(void *argument)
   (void)proto_discovery_udp_start();
   (void)proto_control_udp_start();
   (void)printf("Resident: UDP services started\r\n");
+#if defined(DEBUG)
+  if (boot_app_manager_start_force() == 0)
+#else
   if (boot_app_manager_start_if_valid() == 0)
+#endif
   {
-    (void)printf("Resident: valid app found, entering running state\r\n");
+    (void)printf("Resident: app loaded, entering running state\r\n");
     (void)resident_program_manager_request_state(RESIDENT_PROGRAM_STATE_RUNNING);
   }
   else

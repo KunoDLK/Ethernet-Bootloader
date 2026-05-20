@@ -25,12 +25,21 @@ function(add_ccmram_app_image)
   target_include_directories(${APP_TARGET_NAME}.elf PRIVATE ${APP_INCLUDE_DIRS})
   target_compile_definitions(${APP_TARGET_NAME}.elf PRIVATE ${APP_COMPILE_DEFINITIONS})
 
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_app_opt_level -Og)
+    set(_app_debug_flag -g)
+  else()
+    set(_app_opt_level -Os)
+    set(_app_debug_flag)
+  endif()
+
   target_compile_options(${APP_TARGET_NAME}.elf PRIVATE
     -mcpu=cortex-m4
     -mthumb
     -mfpu=fpv4-sp-d16
     -mfloat-abi=hard
-    -Os
+    ${_app_opt_level}
+    ${_app_debug_flag}
     -ffunction-sections
     -fdata-sections
     -Wall

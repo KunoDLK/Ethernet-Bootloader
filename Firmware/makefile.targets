@@ -1,0 +1,13 @@
+# STM32CubeIDE post-build hook: build the ABI example app and stage debug artifacts.
+# Uses the Application Makefile so arm-none-eabi-gcc from the IDE toolchain is enough.
+
+ifneq (,$(findstring Debug,$(BUILD_ARTIFACT)))
+
+APP_STAGE := $(CURDIR)/App
+
+app-debug-artifacts: $(BUILD_ARTIFACT)
+	@$(MAKE) -C ../Application DEBUG=1 stage STAGE_DIR="$(APP_STAGE)"
+
+main-build: app-debug-artifacts
+
+endif

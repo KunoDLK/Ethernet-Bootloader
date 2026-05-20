@@ -6,19 +6,33 @@ SIZE := $(TOOLCHAIN)-size
 
 APP_NAME := example_app
 BUILD_DIR := build
+STAGE_DIR ?=
+
+OPT_FLAGS := -Os
+ifeq ($(DEBUG),1)
+OPT_FLAGS := -Og -g
+endif
 
 CFLAGS := -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard \
-          -Os -ffunction-sections -fdata-sections -Wall -Wextra \
+          $(OPT_FLAGS) -ffunction-sections -fdata-sections -Wall -Wextra \
           -I../AppAbi -IInc
 LDFLAGS := -Tapp_linker.ld -nostartfiles -Wl,--gc-sections -Wl,-Map=$(BUILD_DIR)/$(APP_NAME).map
 
 SRCS := Src/app_main.c
 OBJS := $(SRCS:Src/%.c=$(BUILD_DIR)/%.o)
 
-.PHONY: all clean
+.PHONY: all clean stage
 
 all: $(BUILD_DIR)/$(APP_NAME).elf $(BUILD_DIR)/$(APP_NAME).bin $(BUILD_DIR)/$(APP_NAME).appimg
 	$(SIZE) $(BUILD_DIR)/$(APP_NAME).elf
+
+stage: all
+ifneq ($(STAGE_DIR),)
+	@mkdir -p "$(STAGE_DIR)"
+	@cp "$(BUILD_DIR)/$(APP_NAME).elf" "$(STAGE_DIR)/application.elf"
+	@cp "$(BUILD_DIR)/$(APP_NAME).bin" "$(STAGE_DIR)/$(APP_NAME).bin"
+	@cp "$(BUILD_DIR)/$(APP_NAME).appimg" "$(STAGE_DIR)/$(APP_NAME).appimg"
+endif
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
